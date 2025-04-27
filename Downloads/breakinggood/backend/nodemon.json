@@ -1,0 +1,5 @@
+{
+  "ignore": ["*.log", "logs/*", "temp/*", "public/*", "./uploads/*", "./data/*", "./cache/*"],
+  "delay": 1000,
+  "verbose": true
+} 
