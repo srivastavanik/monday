@@ -1,0 +1,29 @@
+# Perplexity API Configuration
+PERPLEXITY_API_KEY=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
+
+# ElevenLabs API Configuration  
+ELEVENLABS_API_KEY=sk_9454bca5ee475d45dc6e50bcb33bc3fb76f138e2191ff47d
+ELEVENLABS_VOICE_ID=21m00Tcm4TlvDq8ikWAM
+
+# Database Configuration
+DATABASE_URL=postgresql://monday_user:monday_password@localhost:5432/monday_learning
+REDIS_URL=redis://localhost:6379
+
+# Neo4j Configuration
+NEO4J_URI=bolt://localhost:7687
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=monday_neo4j_password
+
+# Application Configuration
+NODE_ENV=development
+PORT=3001
+FRONTEND_URL=http://localhost:3000
+
+# Security
+JWT_SECRET=monday_ftw
+SESSION_SECRET=monday_ftw123
+
+# Performance Settings
+MAX_CONCURRENT_PANELS=8
+MAX_TRIANGLES_IN_VIEW=150000
+TARGET_FPS=72 

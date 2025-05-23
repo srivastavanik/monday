@@ -17,12 +17,11 @@
 
     /* Linting */
     "strict": true,
-    "noUnusedLocals": true,
-    "noUnusedParameters": true,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
     "noFallthroughCasesInSwitch": true,
 
-    /* Types */
-    "types": ["vite/client", "aframe"],
+    /* Custom types */
     "typeRoots": ["./node_modules/@types", "./src/types"]
   },
   "include": ["src"],

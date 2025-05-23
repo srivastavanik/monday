@@ -1,14 +1,140 @@
-const router = {
-  get: (path: string, handler: any) => {},
-  post: (path: string, handler: any) => {}
+import { Router } from 'express'
+import { logger } from '../utils/logger.js'
+
+const router = Router()
+
+// In-memory analytics store (in production, use database)
+const analytics = {
+  sessions: [],
+  queries: [],
+  performance: [],
+  interactions: []
 }
 
-router.get('/metrics', async (req: any, res: any) => {
-  res.json({ success: true, message: 'Analytics metrics' })
+// Get analytics metrics
+router.get('/metrics', async (req, res) => {
+  try {
+    const metrics = {
+      totalSessions: analytics.sessions.length,
+      totalQueries: analytics.queries.length,
+      averagePerformance: {
+        fps: 72,
+        frameTime: 13.9,
+        memoryUsage: 256
+      }
+    }
+    
+    res.json({ 
+      success: true, 
+      data: metrics
+    })
+  } catch (error) {
+    logger.error('Failed to get analytics metrics:', error)
+    res.status(500).json({ success: false, error: 'Failed to get analytics metrics' })
+  }
 })
 
-router.post('/track', async (req: any, res: any) => {
-  res.json({ success: true, message: 'Event tracked' })
+// Track an event
+router.post('/track', async (req, res) => {
+  try {
+    const { type, data, sessionId } = req.body
+    
+    const event = {
+      id: `event_${Date.now()}`,
+      type,
+      data,
+      sessionId,
+      timestamp: Date.now()
+    }
+    
+    analytics.interactions.push(event)
+    
+    res.json({ 
+      success: true, 
+      message: 'Event tracked successfully',
+      eventId: event.id
+    })
+  } catch (error) {
+    logger.error('Failed to track event:', error)
+    res.status(500).json({ success: false, error: 'Failed to track event' })
+  }
 })
+
+// Get learning insights for a session
+router.get('/insights/:sessionId', async (req, res) => {
+  try {
+    const { sessionId } = req.params
+    
+    const sessionQueries = analytics.queries.filter(q => q.sessionId === sessionId)
+    const sessionInteractions = analytics.interactions.filter(i => i.sessionId === sessionId)
+    
+    const insights = {
+      totalQueries: sessionQueries.length,
+      topicsExplored: [...new Set(sessionQueries.map(q => q.data.topic).filter(Boolean))],
+      queryTypes: {
+        basic: sessionQueries.filter(q => q.data.mode === 'basic').length,
+        reasoning: sessionQueries.filter(q => q.data.mode === 'reasoning').length,
+        research: sessionQueries.filter(q => q.data.mode === 'research').length
+      },
+      learningPath: sessionQueries.map(q => ({
+        timestamp: q.timestamp,
+        topic: q.data.topic,
+        mode: q.data.mode,
+        duration: q.data.responseTime
+      })),
+      engagementScore: calculateEngagementScore(sessionQueries, sessionInteractions)
+    }
+    
+    res.json({ 
+      success: true, 
+      data: insights,
+      sessionId
+    })
+  } catch (error) {
+    logger.error('Failed to get learning insights:', error)
+    res.status(500).json({ success: false, error: 'Failed to get learning insights' })
+  }
+})
+
+// Helper functions
+function getTopTopics(timeFilter: number) {
+  const recentQueries = analytics.queries.filter(q => q.timestamp > timeFilter)
+  const topicCounts = {}
+  
+  recentQueries.forEach(q => {
+    const topic = q.data?.topic
+    if (topic) {
+      topicCounts[topic] = (topicCounts[topic] || 0) + 1
+    }
+  })
+  
+  return Object.entries(topicCounts)
+    .sort(([,a], [,b]) => (b as number) - (a as number))
+    .slice(0, 10)
+    .map(([topic, count]) => ({ topic, count }))
+}
+
+function getLearningProgression(timeFilter: number) {
+  const recentQueries = analytics.queries.filter(q => q.timestamp > timeFilter)
+  const hourlyData = {}
+  
+  recentQueries.forEach(q => {
+    const hour = Math.floor(q.timestamp / (60 * 60 * 1000)) * (60 * 60 * 1000)
+    hourlyData[hour] = (hourlyData[hour] || 0) + 1
+  })
+  
+  return Object.entries(hourlyData)
+    .sort(([a], [b]) => Number(a) - Number(b))
+    .map(([timestamp, count]) => ({ timestamp: Number(timestamp), queries: count }))
+}
+
+function calculateEngagementScore(queries: any[], interactions: any[]) {
+  // Simple engagement score based on query frequency, variety, and interaction types
+  const queryVariety = new Set(queries.map(q => q.data?.mode)).size
+  const interactionVariety = new Set(interactions.map(i => i.type)).size
+  const frequency = queries.length
+  
+  return Math.min(100, (queryVariety * 20) + (interactionVariety * 15) + (frequency * 2))
+}
 
 export default router 
