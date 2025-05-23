@@ -1,0 +1,203 @@
+/* Global styles for Monday: Learning, Amalgamated */
+
+:root {
+  /* Perplexity Brand Colors */
+  --offblack: #091717;
+  --paper-white: #FBFAF4;
+  --true-turquoise: #20808D;
+  
+  /* Typography Scale for VR */
+  --font-size-xs: 14px;
+  --font-size-sm: 16px;
+  --font-size-md: 18px;
+  --font-size-lg: 24px;
+  --font-size-xl: 32px;
+  --font-size-2xl: 48px;
+  
+  /* Spacing */
+  --spacing-xs: 0.25rem;
+  --spacing-sm: 0.5rem;
+  --spacing-md: 1rem;
+  --spacing-lg: 1.5rem;
+  --spacing-xl: 2rem;
+  --spacing-2xl: 3rem;
+  
+  /* VR Specific */
+  --panel-depth: 0.02;
+  --panel-radius: 0.05;
+  --glow-intensity: 0.3;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background-color: var(--offblack);
+  color: var(--paper-white);
+  overflow: hidden;
+}
+
+body {
+  font-family: 'FK Grotesk Neue', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Typography for VR readability */
+h1, h2, h3, h4, h5, h6 {
+  font-family: 'FK Display', Georgia, serif;
+  font-weight: 600;
+  line-height: 1.2;
+  margin: 0 0 var(--spacing-md) 0;
+}
+
+h1 { font-size: var(--font-size-2xl); }
+h2 { font-size: var(--font-size-xl); }
+h3 { font-size: var(--font-size-lg); }
+h4 { font-size: var(--font-size-md); }
+h5 { font-size: var(--font-size-sm); }
+h6 { font-size: var(--font-size-xs); }
+
+p {
+  margin: 0 0 var(--spacing-md) 0;
+  font-size: var(--font-size-md);
+}
+
+/* Button styles for VR interaction */
+.btn {
+  padding: var(--spacing-sm) var(--spacing-lg);
+  border: 2px solid var(--true-turquoise);
+  background: transparent;
+  color: var(--true-turquoise);
+  font-size: var(--font-size-md);
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  border-radius: var(--spacing-xs);
+}
+
+.btn:hover {
+  background: var(--true-turquoise);
+  color: var(--paper-white);
+  box-shadow: 0 0 20px rgba(32, 128, 141, var(--glow-intensity));
+}
+
+.btn:active {
+  transform: scale(0.98);
+}
+
+/* Panel styles for 3D content */
+.panel {
+  background: var(--paper-white);
+  color: var(--offblack);
+  border-radius: calc(var(--panel-radius) * 10px);
+  padding: var(--spacing-lg);
+  box-shadow: 0 0 30px rgba(32, 128, 141, 0.2);
+  border: 2px solid var(--true-turquoise);
+}
+
+.panel-header {
+  color: var(--true-turquoise);
+  font-family: 'FK Display', Georgia, serif;
+  font-size: var(--font-size-lg);
+  font-weight: 600;
+  margin-bottom: var(--spacing-md);
+  border-bottom: 1px solid var(--true-turquoise);
+  padding-bottom: var(--spacing-sm);
+}
+
+/* Citation styles */
+.citation {
+  font-size: var(--font-size-xs);
+  color: var(--true-turquoise);
+  text-decoration: none;
+  padding: var(--spacing-xs) var(--spacing-sm);
+  border: 1px solid var(--true-turquoise);
+  border-radius: var(--spacing-xs);
+  display: inline-block;
+  margin: var(--spacing-xs);
+  transition: all 0.2s ease;
+}
+
+.citation:hover {
+  background: var(--true-turquoise);
+  color: var(--paper-white);
+}
+
+/* Accessibility */
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* High contrast mode */
+@media (prefers-contrast: high) {
+  :root {
+    --glow-intensity: 0.8;
+  }
+  
+  .panel {
+    border-width: 3px;
+  }
+}
+
+/* Focus styles for accessibility */
+:focus {
+  outline: 2px solid var(--true-turquoise);
+  outline-offset: 2px;
+}
+
+/* Loading animations */
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+@keyframes rotate {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.loading {
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.rotating {
+  animation: rotate 2s linear infinite;
+}
+
+/* VR specific optimizations */
+.vr-optimized {
+  /* Larger touch targets for hand tracking */
+  min-height: 44px;
+  min-width: 44px;
+  
+  /* High contrast for distance viewing */
+  border-width: 2px;
+  
+  /* Prevent text from being too small */
+  font-size: max(var(--font-size-md), 16px);
+}
+
+/* Hide elements that shouldn't appear in VR */
+.desktop-only {
+  display: none;
+}
+
+@media (display-mode: browser) {
+  .desktop-only {
+    display: block;
+  }
+  
+  .vr-only {
+    display: none;
+  }
+} 
