@@ -216,7 +216,7 @@ io.on('connection', (socket) => {
             // Use Perplexity if available
             if (mode === 'greeting' && query.length < 10) {
               response = await perplexityService.processQuery({
-                query: "The user just said hello. Greet them warmly as Monday, introduce yourself as their AI learning companion, and ask what they'd like to explore or learn about today. Keep it conversational and under 3 sentences.",
+                query: "The user just said hello. Greet them warmly as Monday, introduce yourself as their AI learning companion, and ask what they'd like to explore or learn about today. Mention briefly that you are powered by Perplexity. Keep it conversational and under 3 sentences.",
                 mode: 'basic',
                 context: context.slice(-4),
                 sessionId: socket.id

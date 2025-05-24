@@ -178,28 +178,44 @@ io.on('connection', (socket) => {
       logger.info(`Voice command received: "${command}" from ${socket.id}`);
       
       // Parse the command
-      const normalizedCommand = command.toLowerCase().trim();
+      const commandLower = command.toLowerCase().trim();
       const sessionState = sessionStates.get(socket.id) || { 
         isInConversation: false, 
         lastActivity: Date.now() 
       };
       
       // Check if this is a Monday activation or continuation
-      const isMondayActivation = normalizedCommand.includes('monday');
+      const isMondayActivation = commandLower.includes('monday');
       const isInActiveConversation = sessionState.isInConversation && 
         (Date.now() - sessionState.lastActivity < 300000); // 5 minute timeout
       
       if (isMondayActivation || isInActiveConversation) {
-        // Remove "Monday" prefix if present to get the actual query
-        const query = command.replace(/monday,?\s*/i, '').trim();
-        const mode = detectQueryMode(command);
-        const context = getConversationContext(socket.id);
+        // Determine the appropriate response mode and query
+        let responseQuery = ''
+        let mode: 'greeting' | 'basic' | 'reasoning' | 'research' = 'basic'
+        
+        if (commandLower.includes('think') || commandLower.includes('reason')) {
+          mode = 'reasoning'
+          responseQuery = `The user wants you to reason through: ${command}. Use step-by-step thinking.`
+        } else if (commandLower.includes('research') || commandLower.includes('investigate')) {
+          mode = 'research' 
+          responseQuery = `The user wants comprehensive research on: ${command}`
+        } else if (commandLower.includes('hello') || commandLower.includes('hi')) {
+          mode = 'greeting'
+          responseQuery = `The user just said hello. Greet them warmly as Monday, introduce yourself as their AI learning companion powered by Perplexity Sonar, and ask what they'd like to learn about today. Keep it conversational and TTS-friendly.`
+        } else if (commandLower === 'monday' || commandLower.includes('monday') && command.split(' ').length <= 2) {
+          mode = 'greeting'
+          responseQuery = `The user said 'Monday' but didn't ask anything specific. Politely ask what they'd like to learn about. Briefly remind them you're Monday, their AI learning companion powered by Perplexity Sonar.`
+        } else {
+          mode = 'basic'
+          responseQuery = command
+        }
         
         // Update session state
         sessionStates.set(socket.id, {
           isInConversation: true,
           lastActivity: Date.now(),
-          currentTopic: query || sessionState.currentTopic
+          currentTopic: responseQuery || sessionState.currentTopic
         });
         
         try {
@@ -207,31 +223,31 @@ io.on('connection', (socket) => {
           
           if (perplexityService) {
             // Use Perplexity if available
-            if (mode === 'greeting' && query.length < 10) {
+            if (mode === 'greeting' && responseQuery.length < 10) {
               response = await perplexityService.processQuery({
-                query: "The user just said hello. Greet them warmly as Monday, introduce yourself as their AI learning companion, and ask what they'd like to explore or learn about today. Keep it conversational and under 3 sentences.",
+                query: responseQuery,
                 mode: 'basic',
-                context: context.slice(-4),
+                context: getConversationContext(socket.id).slice(-4),
                 sessionId: socket.id
               });
-            } else if (query.length > 0) {
+            } else if (responseQuery.length > 0) {
               // Process actual learning queries
-              const fullQuery = context.length > 0 
-                ? `Previous conversation context: ${context.slice(-4).join(' ')}\n\nCurrent user question: ${query}`
-                : query;
+              const fullQuery = getConversationContext(socket.id).length > 0 
+                ? `Previous conversation context: ${getConversationContext(socket.id).slice(-4).join(' ')}\n\nCurrent user question: ${responseQuery}`
+                : responseQuery;
               
               response = await perplexityService.processQuery({
                 query: fullQuery,
                 mode: mode === 'basic' ? 'basic' : mode === 'reasoning' ? 'reasoning' : 'research',
-                context: context.slice(-6),
+                context: getConversationContext(socket.id).slice(-6),
                 sessionId: socket.id
               });
             } else {
               // Empty query - ask for clarification
               response = await perplexityService.processQuery({
-                query: "The user said 'Monday' but didn't ask anything specific. Politely ask what they'd like to learn about or explore. Be encouraging and suggest some interesting topics.",
+                query: responseQuery,
                 mode: 'basic',
-                context: context.slice(-2),
+                context: getConversationContext(socket.id).slice(-2),
                 sessionId: socket.id
               });
             }
@@ -257,7 +273,7 @@ io.on('connection', (socket) => {
           updateConversationContext(socket.id, command, response.content);
           
           // Create spatial learning panels based on response type
-          const panelData = createSpatialPanels(response, mode, query);
+          const panelData = createSpatialPanels(response, mode, responseQuery);
           
           // Send response to frontend
           const responseData = {
@@ -265,7 +281,7 @@ io.on('connection', (socket) => {
             message: response.content,
             action: mode === 'research' ? 'show_research_panel' : mode === 'reasoning' ? 'show_reasoning_panel' : 'show_info_panel',
             data: {
-              title: mode === 'greeting' ? 'Welcome to Monday' : `Learning: ${query}`,
+              title: mode === 'greeting' ? 'Welcome to Monday' : `Learning: ${responseQuery}`,
               content: response.content,
               citations: response.citations || [],
               reasoning: response.reasoning || [],

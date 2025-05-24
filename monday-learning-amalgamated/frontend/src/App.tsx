@@ -153,115 +153,60 @@ const App: React.FC = () => {
     const handleVoiceResponse = async (response: any) => {
       console.log('Received voice response:', response)
       
-      // Update conversation state
       if (response.data?.conversationActive !== undefined) {
         setConversationActive(response.data.conversationActive)
       }
       
-      // Stop listening immediately when Monday starts responding
       if (isListening) {
         stopListening()
         console.log('Stopped listening - Monday is responding')
       }
       
-      // Create spatial panels if provided
       if (response.data?.panels && response.data.panels.length > 0) {
-        console.log('Creating spatial panels:', response.data.panels)
-        response.data.panels.forEach((panelData: any) => {
-          addPanel(panelData)
-        })
-        // Set the main panel as active
-        const mainPanel = response.data.panels.find((p: any) => p.isActive)
-        if (mainPanel) {
-          setActivePanel(mainPanel.id)
-        }
+        console.log('Creating spatial panels:', response.data.panels);
+        response.data.panels.forEach((panelData: any) => addPanel(panelData));
+        const mainPanel = response.data.panels.find((p: any) => p.isActive);
+        if (mainPanel) setActivePanel(mainPanel.id);
       }
       
-      let ttsSucceeded = false
-      
+      let ttsSucceeded = false;
+      setTtsStatus('speaking'); // Set status to speaking BEFORE attempting TTS
+
       try {
-        // Initialize audio if not already done
-        const audioReady = await handleUserInteraction()
-        console.log('Audio initialization result:', audioReady)
+        const audioReady = await handleUserInteraction();
+        console.log('Audio initialization result:', audioReady);
         
         if (audioReady) {
-          // Speak Monday's response
-          setTtsStatus('speaking')
-          await speak(response.message)
-          console.log('Monday finished speaking')
-          ttsSucceeded = true
+          await speak(response.message);
+          console.log('Monday finished speaking (from speak promise)');
+          ttsSucceeded = true;
           
-          // Wait for audio to completely finish
-          const waitForAudioComplete = () => {
-            return new Promise<void>((resolve) => {
-              const checkAudio = () => {
-                if (!isSpeaking && !isPlaying) {
-                  resolve()
-                } else {
-                  setTimeout(checkAudio, 100)
-                }
+          // Wait for isSpeaking and isPlaying to actually become false
+          await new Promise<void>(resolve => {
+            const interval = setInterval(() => {
+              if (!isSpeaking && !isPlaying) {
+                clearInterval(interval);
+                resolve();
               }
-              checkAudio()
-            })
-          }
-          
-          await waitForAudioComplete()
-          setTtsStatus('ready')
-          
-          // Additional delay to prevent feedback
-          setTimeout(() => {
-            if (!isListening && !voiceError) {
-              startListening()
-              console.log('Resumed listening after TTS completed')
-            }
-          }, 1000)
+            }, 50); // Check every 50ms
+          });
+          console.log('isSpeaking & isPlaying are now false');
+
         } else {
-          console.warn('Audio not available, skipping TTS')
-          setTtsStatus('no-audio')
-          // Resume listening immediately if no audio
-          setTimeout(() => {
-            if (!isListening && !voiceError) {
-              startListening()
-              console.log('Resumed listening (no TTS played)')
-            }
-            // Clear no-audio status after a delay
-            setTimeout(() => setTtsStatus('ready'), 3000)
-          }, 500)
+          console.warn('Audio not available, skipping TTS');
         }
-        
       } catch (error) {
-        console.error('TTS error:', error)
-        ttsSucceeded = false
-        setTtsStatus('failed')
-        
-        // Always resume listening after TTS error
-        setTimeout(() => {
-          if (!isListening && !voiceError) {
-            startListening()
-            console.log('Resumed listening after TTS error')
-          }
-          // Clear failed status after a delay
-          setTimeout(() => setTtsStatus('ready'), 3000)
-        }, 1000)
+        console.error('TTS error during speak:', error);
+        ttsSucceeded = false;
+      } finally {
+        console.log('TTS operation finished. Success:', ttsSucceeded);
+        setTtsStatus(ttsSucceeded ? 'ready' : (audioInitialized ? 'failed' : 'no-audio'));
+        console.log('TTS status set to:', ttsSucceeded ? 'ready' : (audioInitialized ? 'failed' : 'no-audio'));
       }
       
       // Log response data for debugging
-      if (response.data?.citations?.length > 0) {
-        console.log('Citations:', response.data.citations)
-      }
-      if (response.data?.reasoning?.length > 0) {
-        console.log('Reasoning steps:', response.data.reasoning)
-      }
       if (response.data?.metadata) {
-        console.log('Response metadata:', response.data.metadata)
-        console.log('TTS Status:', ttsSucceeded ? 'SUCCESS' : 'FAILED')
-      }
-      
-      // Clear TTS status after timeout
-      if (ttsStatus !== 'ready') {
-        setTimeout(() => {
-          setTtsStatus('ready')
-        }, 5000) // Clear status after 5 seconds
+        console.log('Response metadata:', response.data.metadata, 'TTS Actual Success:', ttsSucceeded);
       }
     }
 
@@ -317,34 +262,79 @@ const App: React.FC = () => {
   // Monitor TTS status and reset if stuck
   useEffect(() => {
     const statusCheckTimer = setInterval(() => {
-      // If status says speaking but TTS isn't actually speaking/playing, reset it
-      if (ttsStatus === 'speaking' && !isSpeaking && !isPlaying) {
-        console.log('Resetting stuck TTS status from speaking to ready')
-        setTtsStatus('ready')
+      // Watchdog for TTS actually being stuck in isSpeaking or isPlaying for too long
+      if ((isSpeaking || isPlaying) && ttsStatus === 'speaking') {
+        // This indicates that the useTextToSpeech hook itself might be stuck
+        // Check how long it has been in this state (not implemented here, but could be)
+        // For now, if it's speaking/playing but the app thinks it's stuck, it's a deeper issue
+        // console.warn('TTS hook reporting speaking/playing, but ttsStatus watchdog trying to reset.');
+      } else if (ttsStatus === 'speaking' && !isSpeaking && !isPlaying) {
+        // This is the original case: app thinks it's speaking, but hook says it's not.
+        console.warn('CRITICAL: TTS status desync. App thinks TTS is speaking, but hook is idle. Resetting to ready.');
+        setTtsStatus('ready');
       }
-      
-      // If status says failed or no-audio for too long, reset to ready
-      if ((ttsStatus === 'failed' || ttsStatus === 'no-audio') && Date.now() % 10000 < 1000) {
-        console.log('Auto-clearing TTS status:', ttsStatus)
-        setTtsStatus('ready')
-      }
-    }, 1000) // Check every second
 
-    return () => clearInterval(statusCheckTimer)
-  }, [ttsStatus, isSpeaking, isPlaying])
+      // Auto-clear 'failed' or 'no-audio' states after a timeout
+      if (ttsStatus === 'failed' || ttsStatus === 'no-audio') {
+        const clearTimer = setTimeout(() => {
+          if (ttsStatus === 'failed' || ttsStatus === 'no-audio') { // Check again before clearing
+            console.log('Auto-clearing TTS status:', ttsStatus, 'to ready after timeout');
+            setTtsStatus('ready');
+          }
+        }, 7000); // Clear after 7 seconds if still in this state
+        return () => clearTimeout(clearTimer);
+      }
+    }, 1000); // Check every 1 second
+
+    return () => clearInterval(statusCheckTimer);
+  }, [ttsStatus, isSpeaking, isPlaying]);
 
   // Recovery mechanism: restart voice recognition if stuck
   useEffect(() => {
     const recoveryTimer = setInterval(() => {
-      // If we should be listening but aren't, and conversation is active, restart
-      if (conversationActive && !isListening && !voiceError && !isSpeaking && !isPlaying && sessionState.isActive) {
-        console.log('Recovery: restarting voice recognition')
-        startListening()
+      // If we should be listening but aren't, and conversation is active, and TTS is ready (not speaking/failed)
+      if (conversationActive && 
+          !isListening && 
+          !voiceError && 
+          ttsStatus === 'ready' && // Ensure TTS is not active or in an error state
+          sessionState.isActive
+      ) {
+        console.warn('Recovery: Voice recognition seems stuck. Restarting.');
+        startListening();
       }
-    }, 5000) // Check every 5 seconds
+    }, 3000); // Check every 3 seconds
 
-    return () => clearInterval(recoveryTimer)
-  }, [conversationActive, isListening, voiceError, isSpeaking, isPlaying, sessionState.isActive, startListening])
+    return () => clearInterval(recoveryTimer);
+  }, [conversationActive, isListening, voiceError, ttsStatus, sessionState.isActive, startListening]);
+
+  // Handle voice recognition restart after TTS completion
+  useEffect(() => {
+    // Only restart listening if:
+    // 1. TTS is ready (not speaking/failed/no-audio)
+    // 2. We're not currently listening
+    // 3. There's no voice error
+    // 4. We're in an active conversation
+    // 5. TTS is not currently active (isSpeaking/isPlaying)
+    if (ttsStatus === 'ready' && 
+        !isListening && 
+        !voiceError && 
+        conversationActive && 
+        !isSpeaking && 
+        !isPlaying) {
+      
+      console.log('TTS completed, restarting voice recognition');
+      
+      // Small delay to ensure all TTS processes are fully complete
+      const restartTimer = setTimeout(() => {
+        if (!isListening && !voiceError && !isSpeaking && !isPlaying) {
+          startListening();
+          console.log('Voice recognition restarted after TTS completion');
+        }
+      }, 500);
+
+      return () => clearTimeout(restartTimer);
+    }
+  }, [ttsStatus, isListening, voiceError, conversationActive, isSpeaking, isPlaying, startListening]);
 
   // Manual reset function for when system gets stuck
   const manualReset = useCallback(async () => {
