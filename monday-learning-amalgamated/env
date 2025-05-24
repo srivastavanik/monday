@@ -5,6 +5,10 @@ PERPLEXITY_API_KEY=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
 ELEVENLABS_API_KEY=sk_9454bca5ee475d45dc6e50bcb33bc3fb76f138e2191ff47d
 ELEVENLABS_VOICE_ID=21m00Tcm4TlvDq8ikWAM
 
+# Frontend-accessible ElevenLabs API Configuration (VITE_ prefix required)
+VITE_ELEVENLABS_API_KEY=sk_9454bca5ee475d45dc6e50bcb33bc3fb76f138e2191ff47d
+VITE_ELEVENLABS_VOICE_ID=21m00Tcm4TlvDq8ikWAM
+
 # Database Configuration
 DATABASE_URL=postgresql://monday_user:monday_password@localhost:5432/monday_learning
 REDIS_URL=redis://localhost:6379

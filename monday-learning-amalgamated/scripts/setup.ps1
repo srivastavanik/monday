@@ -26,20 +26,44 @@ Write-Host "Creating SSL certificates for local development..." -ForegroundColor
 
 New-Item -ItemType Directory -Force -Path "frontend\certs" | Out-Null
 
-if (Test-Command openssl) {
-    # Generate self-signed certificate using OpenSSL
-    openssl req -x509 -newkey rsa:4096 -keyout frontend\certs\key.pem -out frontend\certs\cert.pem -days 365 -nodes -subj "/C=US/ST=State/L=City/O=Organization/CN=localhost"
+if (Test-Command mkcert) {
+    Write-Host "Using mkcert to generate SSL certificates..." -ForegroundColor Cyan
+    # Navigate to the certs directory
+    Push-Location "frontend\certs"
     
-    if ($LASTEXITCODE -eq 0) {
-        Write-Host "SSL certificates created successfully!" -ForegroundColor Green
-        Write-Host "Note: You'll need to accept the self-signed certificate in your browser." -ForegroundColor Yellow
+    # Generate certificates
+    mkcert localhost 127.0.0.1 ::1
+    
+    # Check if certificate generation was successful
+    if (Test-Path ".\localhost+2.pem") { # mkcert generates files like localhost+2.pem and localhost+2-key.pem
+        Rename-Item -Path ".\localhost+2.pem" -NewName "cert.pem"
+        Rename-Item -Path ".\localhost+2-key.pem" -NewName "key.pem"
+        Write-Host "SSL certificates created successfully using mkcert!" -ForegroundColor Green
+        Write-Host "Certificates were automatically added to your local trust store." -ForegroundColor Green
     } else {
-        Write-Host "Failed to create SSL certificates. WebXR may not work properly." -ForegroundColor Red
+        Write-Host "Failed to create SSL certificates using mkcert. WebXR may not work properly." -ForegroundColor Red
     }
+    # Return to the previous directory
+    Pop-Location
 } else {
-    Write-Host "OpenSSL not found. Creating placeholder certificates..." -ForegroundColor Yellow
-    "# Placeholder certificate - install OpenSSL to generate real certs" | Out-File -FilePath "frontend\certs\cert.pem"
-    "# Placeholder key - install OpenSSL to generate real certs" | Out-File -FilePath "frontend\certs\key.pem"
+    Write-Host "mkcert is not installed or not found in PATH." -ForegroundColor Red
+    Write-Host "Please install mkcert (https://github.com/FiloSottile/mkcert) and ensure it's in your PATH." -ForegroundColor Red
+    Write-Host "Falling back to OpenSSL or placeholder certificates..." -ForegroundColor Yellow
+    if (Test-Command openssl) {
+        # Generate self-signed certificate using OpenSSL
+        openssl req -x509 -newkey rsa:4096 -keyout frontend\certs\key.pem -out frontend\certs\cert.pem -days 365 -nodes -subj "/C=US/ST=State/L=City/O=Organization/CN=localhost"
+        
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "SSL certificates created successfully using OpenSSL!" -ForegroundColor Green
+            Write-Host "Note: You'll need to accept the self-signed certificate in your browser." -ForegroundColor Yellow
+        } else {
+            Write-Host "Failed to create SSL certificates using OpenSSL. WebXR may not work properly." -ForegroundColor Red
+        }
+    } else {
+        Write-Host "OpenSSL not found. Creating placeholder certificates..." -ForegroundColor Yellow
+        "# Placeholder certificate - install mkcert or OpenSSL to generate real certs" | Out-File -FilePath "frontend\certs\cert.pem"
+        "# Placeholder key - install mkcert or OpenSSL to generate real certs" | Out-File -FilePath "frontend\certs\key.pem"
+    }
 }
 
 # Set up environment variables

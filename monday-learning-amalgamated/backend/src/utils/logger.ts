@@ -3,6 +3,36 @@ import winston from 'winston'
 const logLevel = process.env.LOG_LEVEL || 'info'
 const isDevelopment = process.env.NODE_ENV === 'development'
 
+// Safe JSON stringify to handle circular references
+const safeJsonStringify = (obj: any, indent?: number): string => {
+  const seen = new WeakSet()
+  return JSON.stringify(obj, (key, value) => {
+    if (typeof value === 'object' && value !== null) {
+      if (seen.has(value)) {
+        return '[Circular Reference]'
+      }
+      seen.add(value)
+    }
+    // Filter out sensitive or problematic properties
+    if (key === 'password' || key === 'token' || key === 'secret') {
+      return '[REDACTED]'
+    }
+    // Handle Error objects specifically
+    if (value instanceof Error) {
+      return {
+        name: value.name,
+        message: value.message,
+        stack: value.stack
+      }
+    }
+    // Handle request/response objects
+    if (key === 'req' || key === 'res' || key === 'request' || key === 'response') {
+      return '[HTTP Object]'
+    }
+    return value
+  }, indent)
+}
+
 // Custom log format
 const logFormat = winston.format.combine(
   winston.format.timestamp({
@@ -22,7 +52,11 @@ const consoleFormat = winston.format.combine(
   winston.format.printf(({ timestamp, level, message, ...meta }) => {
     let log = `${timestamp} [${level}]: ${message}`
     if (Object.keys(meta).length > 0) {
-      log += ` ${JSON.stringify(meta, null, 2)}`
+      try {
+        log += ` ${safeJsonStringify(meta, 2)}`
+      } catch (error: any) {
+        log += ` [Error serializing metadata: ${error.message}]`
+      }
     }
     return log
   })
@@ -82,12 +116,19 @@ export const logRequest = (req: any, res: any, responseTime: number) => {
   })
 }
 
-// Add error logging helper
+// Add error logging helper with safe serialization
 export const logError = (error: Error, context?: Record<string, any>) => {
-  logger.error('Application Error', {
+  const errorInfo = {
+    name: error.name,
     message: error.message,
-    stack: error.stack,
-    ...context
+    stack: error.stack
+  }
+  
+  const safeContext = context ? JSON.parse(safeJsonStringify(context)) : {}
+  
+  logger.error('Application Error', {
+    error: errorInfo,
+    ...safeContext
   })
 }
 

@@ -3,14 +3,29 @@ interface VoiceInterfaceProps {
   transcript: string
   onStartListening: () => void
   onStopListening: () => void
+  conversationActive?: boolean
+  onUserInteraction?: () => void
 }
 
 const VoiceInterface = ({ 
   isListening, 
   transcript, 
   onStartListening, 
-  onStopListening 
+  onStopListening,
+  conversationActive = false,
+  onUserInteraction
 }: VoiceInterfaceProps) => {
+
+  const handleStartListening = () => {
+    onUserInteraction?.() // Initialize audio context
+    onStartListening()
+  }
+
+  const handleStopListening = () => {
+    onUserInteraction?.() // Initialize audio context  
+    onStopListening()
+  }
+
   return (
     <div style={{
       position: 'fixed',
@@ -32,7 +47,10 @@ const VoiceInterface = ({
         marginBottom: '0.5rem',
         opacity: 0.8
       }}>
-        {isListening ? 'Listening for "Monday..."' : 'Voice recognition ready'}
+        {isListening 
+          ? (conversationActive ? 'Listening...' : 'Listening for "Monday..."')
+          : (conversationActive ? 'In conversation - voice ready' : 'Voice recognition ready')
+        }
       </div>
       
       {transcript && (
@@ -45,6 +63,16 @@ const VoiceInterface = ({
         </div>
       )}
       
+      {conversationActive && (
+        <div style={{
+          fontSize: '0.75rem',
+          color: 'var(--true-turquoise)',
+          marginBottom: '0.5rem'
+        }}>
+          💬 You can speak without saying "Monday"
+        </div>
+      )}
+      
       <div style={{
         display: 'flex',
         justifyContent: 'center',
@@ -54,7 +82,7 @@ const VoiceInterface = ({
         {!isListening ? (
           <button
             className="btn"
-            onClick={onStartListening}
+            onClick={handleStartListening}
             style={{
               fontSize: '0.875rem',
               padding: '0.5rem 1rem'
@@ -65,7 +93,7 @@ const VoiceInterface = ({
         ) : (
           <button
             className="btn"
-            onClick={onStopListening}
+            onClick={handleStopListening}
             style={{
               fontSize: '0.875rem',
               padding: '0.5rem 1rem',

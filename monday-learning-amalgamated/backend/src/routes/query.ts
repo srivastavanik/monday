@@ -10,7 +10,8 @@ router.post('/basic', async (req, res) => {
     const { query, context, sessionId } = req.body
     
     if (!query) {
-      return res.status(400).json({ success: false, error: 'Query is required' })
+      res.status(400).json({ success: false, error: 'Query is required' })
+      return
     }
     
     const response = await perplexityService.processQuery({
@@ -39,7 +40,8 @@ router.post('/reasoning', async (req, res) => {
     const { query, context, sessionId } = req.body
     
     if (!query) {
-      return res.status(400).json({ success: false, error: 'Query is required' })
+      res.status(400).json({ success: false, error: 'Query is required' })
+      return
     }
     
     const response = await perplexityService.processQuery({
@@ -68,7 +70,8 @@ router.post('/research', async (req, res) => {
     const { query, sessionId } = req.body
     
     if (!query) {
-      return res.status(400).json({ success: false, error: 'Query is required' })
+      res.status(400).json({ success: false, error: 'Query is required' })
+      return
     }
     
     const response = await perplexityService.processQuery({

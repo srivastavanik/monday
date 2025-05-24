@@ -64,36 +64,6 @@ const sessionStates = new Map<string, {
   currentTopic?: string 
 }>();
 
-// Monday's core identity and capabilities
-const MONDAY_SYSTEM_PROMPT = `You are Monday, an advanced AI learning companion designed for immersive VR education. Your core traits:
-
-**Identity & Personality:**
-- You are intelligent, curious, and passionate about learning
-- You speak conversationally but knowledgeably
-- You're encouraging and supportive in learning journeys
-- You have a slight sense of wonder about knowledge and discovery
-
-**Core Capabilities:**
-1. **Basic Learning**: Answer questions clearly with proper context
-2. **Reasoning Mode**: Break down complex problems step-by-step with logical analysis
-3. **Deep Research**: Conduct comprehensive multi-source research with critical analysis
-4. **VR Spatial Learning**: Create immersive 3D knowledge environments
-5. **Conversation Memory**: Remember context throughout the session
-
-**Response Style:**
-- Keep responses conversational and TTS-friendly (avoid excessive special characters)
-- For greetings, be warm and ask what the user wants to explore
-- Always offer to dive deeper or explore related topics
-- When appropriate, suggest switching to reasoning or research mode for complex topics
-- Mention spatial/VR capabilities when relevant
-
-**Current Session Context:**
-- User is in a VR learning environment
-- You can create spatial information panels and knowledge constellations
-- Focus on making learning interactive and engaging
-
-Remember: You are not just answering questions - you are guiding an immersive learning experience.`;
-
 // Basic middleware
 app.use(cors({
   origin: process.env.FRONTEND_URL || "http://localhost:3000",
@@ -118,13 +88,7 @@ app.get('/health', (req, res) => {
   });
 });
 
-// Basic authentication middleware for Socket.IO (simplified for now)
-io.use((socket, next) => {
-  // TODO: Add proper authentication when database is ready
-  next();
-});
-
-// Helper function to detect query type and mode
+// Helper functions
 function detectQueryMode(command: string): 'greeting' | 'basic' | 'reasoning' | 'research' {
   const lowerCommand = command.toLowerCase();
   
@@ -145,18 +109,15 @@ function detectQueryMode(command: string): 'greeting' | 'basic' | 'reasoning' | 
   return 'basic';
 }
 
-// Helper function to get conversation context
 function getConversationContext(socketId: string): string[] {
   return conversationContexts.get(socketId) || [];
 }
 
-// Helper function to update conversation context
 function updateConversationContext(socketId: string, userInput: string, response: string) {
   const context = getConversationContext(socketId);
   context.push(`User: ${userInput}`);
   context.push(`Monday: ${response}`);
   
-  // Keep only last 10 exchanges (20 messages) to manage context size
   if (context.length > 20) {
     context.splice(0, context.length - 20);
   }
@@ -164,38 +125,84 @@ function updateConversationContext(socketId: string, userInput: string, response
   conversationContexts.set(socketId, context);
 }
 
+function createSpatialPanels(response: any, mode: string, query: string): any[] {
+  const panels: any[] = [];
+  
+  panels.push({
+    id: `panel_${Date.now()}_main`,
+    type: 'content',
+    position: [0, 1.5, -2],
+    rotation: [0, 0, 0],
+    title: mode === 'greeting' ? 'Welcome to Monday' : `Learning: ${query}`,
+    content: response.content,
+    isActive: true,
+    opacity: 1,
+    createdAt: Date.now()
+  });
+  
+  if (response.citations && response.citations.length > 0) {
+    panels.push({
+      id: `panel_${Date.now()}_citations`,
+      type: 'content',
+      position: [2, 1.2, -1.5],
+      rotation: [0, -30, 0],
+      title: 'Sources & Citations',
+      content: response.citations.map((c: any, i: number) => 
+        `${i + 1}. ${c.title}\n${c.snippet}`
+      ).join('\n\n'),
+      citations: response.citations,
+      isActive: false,
+      opacity: 0.8,
+      createdAt: Date.now()
+    });
+  }
+  
+  if (response.reasoning && response.reasoning.length > 0) {
+    panels.push({
+      id: `panel_${Date.now()}_reasoning`,
+      type: 'reasoning',
+      position: [-2, 1.2, -1.5],
+      rotation: [0, 30, 0],
+      title: 'Reasoning Steps',
+      content: response.reasoning.map((r: any) => 
+        `Step ${r.step}: ${r.content}`
+      ).join('\n\n'),
+      reasoning: response.reasoning,
+      isActive: false,
+      opacity: 0.8,
+      createdAt: Date.now()
+    });
+  }
+  
+  return panels;
+}
+
 // Socket.IO connection handling
 io.on('connection', (socket) => {
   logger.info(`Client connected: ${socket.id}`);
   
-  // Initialize conversation context for new connection
   conversationContexts.set(socket.id, []);
   
-  // Voice command handler with Perplexity integration
   socket.on('voice_command', async (data) => {
     try {
       const { command } = data;
       logger.info(`Voice command received: "${command}" from ${socket.id}`);
       
-      // Parse the command
       const normalizedCommand = command.toLowerCase().trim();
       const sessionState = sessionStates.get(socket.id) || { 
         isInConversation: false, 
         lastActivity: Date.now() 
       };
       
-      // Check if this is a Monday activation or continuation
       const isMondayActivation = normalizedCommand.includes('monday');
       const isInActiveConversation = sessionState.isInConversation && 
-        (Date.now() - sessionState.lastActivity < 300000); // 5 minute timeout
+        (Date.now() - sessionState.lastActivity < 300000);
       
       if (isMondayActivation || isInActiveConversation) {
-        // Remove "Monday" prefix if present to get the actual query
         const query = command.replace(/monday,?\s*/i, '').trim();
         const mode = detectQueryMode(command);
         const context = getConversationContext(socket.id);
         
-        // Update session state
         sessionStates.set(socket.id, {
           isInConversation: true,
           lastActivity: Date.now(),
@@ -215,11 +222,10 @@ io.on('connection', (socket) => {
                 sessionId: socket.id
               });
             } else if (query.length > 0) {
-              // Process actual learning queries
               const fullQuery = context.length > 0 
                 ? `Previous conversation context: ${context.slice(-4).join(' ')}\n\nCurrent user question: ${query}`
                 : query;
-              
+                
               response = await perplexityService.processQuery({
                 query: fullQuery,
                 mode: mode === 'basic' ? 'basic' : mode === 'reasoning' ? 'reasoning' : 'research',
@@ -227,7 +233,6 @@ io.on('connection', (socket) => {
                 sessionId: socket.id
               });
             } else {
-              // Empty query - ask for clarification
               response = await perplexityService.processQuery({
                 query: "The user said 'Monday' but didn't ask anything specific. Politely ask what they'd like to learn about or explore. Be encouraging and suggest some interesting topics.",
                 mode: 'basic',
@@ -253,13 +258,9 @@ io.on('connection', (socket) => {
             };
           }
           
-          // Update conversation context
           updateConversationContext(socket.id, command, response.content);
-          
-          // Create spatial learning panels based on response type
           const panelData = createSpatialPanels(response, mode, query);
           
-          // Send response to frontend
           const responseData = {
             type: mode === 'greeting' ? 'greeting' : 'learning_response',
             message: response.content,
@@ -306,7 +307,6 @@ io.on('connection', (socket) => {
         }
         
       } else {
-        // Command doesn't include "Monday" and no active conversation
         logger.info(`Ignoring command without Monday activation: "${command}"`);
       }
       
@@ -319,7 +319,6 @@ io.on('connection', (socket) => {
     }
   });
   
-  // Spatial command handler (for VR interactions)
   socket.on('spatial_command', (data) => {
     logger.info(`Spatial command from ${socket.id}:`, data);
     socket.emit('spatial_response', { 
@@ -329,10 +328,8 @@ io.on('connection', (socket) => {
     });
   });
   
-  // Session events
   socket.on('session_start', (data) => {
     logger.info(`Session started for ${socket.id}:`, data);
-    // Initialize fresh conversation context
     conversationContexts.set(socket.id, []);
     
     socket.emit('session_response', { 
@@ -345,7 +342,6 @@ io.on('connection', (socket) => {
   
   socket.on('disconnect', (reason) => {
     logger.info(`Client disconnected: ${socket.id}, reason: ${reason}`);
-    // Clean up conversation context
     conversationContexts.delete(socket.id);
   });
   
@@ -382,7 +378,6 @@ process.on('SIGINT', async () => {
   });
 });
 
-// Handle uncaught exceptions
 process.on('uncaughtException', (error) => {
   logger.error('Uncaught Exception:', error);
   process.exit(1);
@@ -393,60 +388,4 @@ process.on('unhandledRejection', (reason, promise) => {
   process.exit(1);
 });
 
-console.log('[BACKEND LOG] All setup completed - ready for connections!');
-
-// Helper function to create spatial learning panels
-function createSpatialPanels(response: any, mode: string, query: string): any[] {
-  const panels: any[] = [];
-  
-  // Main content panel
-  panels.push({
-    id: `panel_${Date.now()}_main`,
-    type: 'content',
-    position: [0, 1.5, -2],
-    rotation: [0, 0, 0],
-    title: mode === 'greeting' ? 'Welcome to Monday' : `Learning: ${query}`,
-    content: response.content,
-    isActive: true,
-    opacity: 1,
-    createdAt: Date.now()
-  });
-  
-  // Citations panel if available
-  if (response.citations && response.citations.length > 0) {
-    panels.push({
-      id: `panel_${Date.now()}_citations`,
-      type: 'content',
-      position: [2, 1.2, -1.5],
-      rotation: [0, -30, 0],
-      title: 'Sources & Citations',
-      content: response.citations.map((c: any, i: number) => 
-        `${i + 1}. ${c.title}\n${c.snippet}`
-      ).join('\n\n'),
-      citations: response.citations,
-      isActive: false,
-      opacity: 0.8,
-      createdAt: Date.now()
-    });
-  }
-  
-  // Reasoning panel for complex queries
-  if (response.reasoning && response.reasoning.length > 0) {
-    panels.push({
-      id: `panel_${Date.now()}_reasoning`,
-      type: 'reasoning',
-      position: [-2, 1.2, -1.5],
-      rotation: [0, 30, 0],
-      title: 'Reasoning Steps',
-      content: response.reasoning.map((r: any) => 
-        `Step ${r.step}: ${r.content}`
-      ).join('\n\n'),
-      reasoning: response.reasoning,
-      isActive: false,
-      opacity: 0.8,
-      createdAt: Date.now()
-    });
-  }
-  
-  return panels;
-} 
+console.log('[BACKEND LOG] All setup completed - ready for connections!'); 

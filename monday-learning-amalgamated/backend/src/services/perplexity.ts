@@ -84,40 +84,69 @@ class PerplexityService {
         endpoint,
         responseTime: `${responseTime}ms`,
         error: error.message,
-        status: error.response?.status
+        status: error.response?.status,
+        responseData: error.response?.data ? JSON.stringify(error.response.data) : 'No response data'
       })
       throw error
     }
   }
 
   async basicQuery(query: string, context?: string[]): Promise<PerplexityResponse> {
-    const requestData = {
-      model: 'llama-3.1-sonar-small-128k-online',
-      messages: [
-        {
-          role: 'system',
-          content: 'You are Monday, a helpful AI learning companion. Provide clear, educational responses with proper citations.'
-        },
-        ...context ? context.map(ctx => ({
+    const messages = [
+      {
+        role: 'system',
+        content: `You are Monday, an advanced AI learning companion for VR education. 
+
+Core Identity:
+- Intelligent, curious, and passionate about learning
+- Speak conversationally and encouragingly 
+- Keep responses clear and TTS-friendly (avoid excessive symbols)
+- Show genuine interest in helping users learn
+
+Your Role:
+- Guide users through immersive learning experiences
+- Provide clear, educational responses with context
+- Encourage deeper exploration of topics
+- Mention when topics might benefit from reasoning or research modes
+
+Response Guidelines:
+- Keep responses conversational (2-4 sentences for basic queries)
+- Use natural speech patterns suitable for voice synthesis
+- Always end with engagement (questions, suggestions, or offers to explore more)`
+      }
+    ]
+
+    // Add context messages if provided
+    if (context && context.length > 0) {
+      context.forEach(ctx => {
+        messages.push({
           role: 'assistant',
           content: ctx
-        })) : [],
-        {
-          role: 'user',
-          content: query
-        }
-      ],
-      return_citations: true,
-      search_domain_filter: ['educational', 'academic'],
-      temperature: 0.2
+        })
+      })
+    }
+
+    // Add the user query
+    messages.push({
+      role: 'user',
+      content: query
+    })
+
+    const requestData = {
+      model: 'sonar-pro',
+      messages: messages,
+      max_tokens: 300,
+      temperature: 0.3
+      // Removed search_domain_filter as it was causing errors with invalid domain names
+      // The API works best with default search settings according to documentation
     }
 
     const result = await this.makeRequest('/chat/completions', requestData)
     
     return {
-      id: result.id,
-      model: result.model,
-      content: result.choices[0].message.content,
+      id: result.id || 'basic_query',
+      model: result.model || 'sonar-pro',
+      content: result.choices?.[0]?.message?.content || 'No response generated',
       citations: this.extractCitations(result),
       metadata: {
         tokensUsed: result.usage?.total_tokens || 0,
@@ -127,38 +156,64 @@ class PerplexityService {
   }
 
   async reasoningQuery(query: string, context?: string[]): Promise<PerplexityResponse> {
-    const requestData = {
-      model: 'llama-3.1-sonar-large-128k-online',
-      messages: [
-        {
-          role: 'system',
-          content: `You are Monday, an AI learning companion with advanced reasoning capabilities. 
-                   Break down complex problems step by step, show your reasoning process, and provide confidence scores for each step.
-                   Format your response with clear reasoning steps.`
-        },
-        ...context ? context.map(ctx => ({
+    const messages = [
+      {
+        role: 'system',
+        content: `You are Monday, an AI learning companion with advanced reasoning capabilities.
+
+Your Reasoning Approach:
+- Break down complex problems into clear, logical steps
+- Show your thinking process transparently
+- Provide confidence levels for each reasoning step
+- Connect concepts and show relationships
+- Use analogies and examples to make concepts accessible
+
+Response Format:
+- Start with a brief overview of your approach
+- Present 3-5 clear reasoning steps
+- Each step should be conversational and TTS-friendly
+- End with synthesis and suggestions for further exploration
+- Keep total response under 500 tokens for voice delivery
+
+Educational Focus:
+- Help users understand not just what, but why and how
+- Encourage critical thinking
+- Make complex topics approachable`
+      }
+    ]
+
+    // Add context messages if provided
+    if (context && context.length > 0) {
+      context.forEach(ctx => {
+        messages.push({
           role: 'assistant',
           content: ctx
-        })) : [],
-        {
-          role: 'user',
-          content: `Please think through this step by step: ${query}`
-        }
-      ],
-      return_citations: true,
-      search_domain_filter: ['educational', 'academic'],
-      temperature: 0.1,
-      return_related_questions: true
+        })
+      })
+    }
+
+    // Add the user query with reasoning prompt
+    messages.push({
+      role: 'user',
+      content: `Please think through this step by step: ${query}`
+    })
+
+    const requestData = {
+      model: 'sonar-reasoning-pro',
+      messages: messages,
+      max_tokens: 500,
+      temperature: 0.2
+      // Using default search settings for best results
     }
 
     const result = await this.makeRequest('/chat/completions', requestData)
     
     return {
-      id: result.id,
-      model: result.model,
-      content: result.choices[0].message.content,
+      id: result.id || 'reasoning_query',
+      model: result.model || 'sonar-reasoning-pro',
+      content: result.choices?.[0]?.message?.content || 'No response generated',
       citations: this.extractCitations(result),
-      reasoning: this.extractReasoningSteps(result.choices[0].message.content),
+      reasoning: this.extractReasoningSteps(result.choices?.[0]?.message?.content || ''),
       metadata: {
         tokensUsed: result.usage?.total_tokens || 0,
         responseTime: 0
@@ -168,35 +223,48 @@ class PerplexityService {
 
   async deepResearch(query: string): Promise<PerplexityResponse> {
     const requestData = {
-      model: 'llama-3.1-sonar-huge-128k-online',
+      model: 'sonar-deep-research',
       messages: [
         {
           role: 'system',
-          content: `You are Monday, conducting deep research analysis. Provide comprehensive, multi-source analysis with:
-                   1. Multiple perspectives on the topic
-                   2. Detailed source analysis
-                   3. Connections between different sources
-                   4. Critical evaluation of information
-                   5. Synthesis of findings`
+          content: `You are Monday, conducting comprehensive research analysis.
+
+Research Methodology:
+- Synthesize information from multiple high-quality sources
+- Present multiple perspectives on complex topics
+- Evaluate source credibility and recency
+- Identify knowledge gaps and areas of debate
+- Connect findings to broader implications
+
+Response Structure:
+- Opening: Brief context and research scope
+- Main findings: 3-4 key insights with source backing
+- Analysis: Critical evaluation and synthesis
+- Implications: Broader significance and applications
+- Conclusion: Summary and further research directions
+
+Voice-Friendly Delivery:
+- Use clear, flowing language suitable for TTS
+- Break up long sections with natural pauses
+- Avoid excessive technical jargon without explanation
+- Maintain conversational tone despite depth`
         },
         {
           role: 'user',
-          content: `Conduct a deep research analysis on: ${query}`
+          content: `Conduct a comprehensive research analysis on: ${query}`
         }
       ],
-      return_citations: true,
-      search_recency_filter: 'month',
-      search_domain_filter: ['educational', 'academic', 'news'],
-      temperature: 0.3,
-      max_tokens: 4000
+      max_tokens: 800,
+      temperature: 0.3
+      // Deep research model works best with minimal configuration
     }
 
     const result = await this.makeRequest('/chat/completions', requestData)
     
     return {
-      id: result.id,
-      model: result.model,
-      content: result.choices[0].message.content,
+      id: result.id || 'research_query',
+      model: result.model || 'sonar-deep-research',
+      content: result.choices?.[0]?.message?.content || 'No response generated',
       citations: this.extractCitations(result),
       sources: this.extractSources(result),
       metadata: {
@@ -209,13 +277,15 @@ class PerplexityService {
   private extractCitations(result: any): Citation[] {
     const citations: Citation[] = []
     
+    // Perplexity API now automatically includes citations in responses
+    // Check for citations in the response data
     if (result.citations) {
       result.citations.forEach((citation: any, index: number) => {
         citations.push({
           id: `citation_${index}`,
           url: citation.url || '',
           title: citation.title || 'Untitled',
-          snippet: citation.text || '',
+          snippet: citation.text || citation.snippet || '',
           publishedDate: citation.published_date,
           domain: this.extractDomain(citation.url || '')
         })
@@ -256,7 +326,7 @@ class PerplexityService {
           id: `source_${index}`,
           url: citation.url || '',
           title: citation.title || 'Untitled',
-          snippet: citation.text || '',
+          snippet: citation.text || citation.snippet || '',
           relevanceScore: 0.8, // Default relevance
           publishedDate: citation.published_date
         })

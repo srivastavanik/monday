@@ -1,10 +1,51 @@
 import { Router } from 'express'
 import { logger } from '../utils/logger.js'
 
+// Define interfaces for analytics data structures
+interface Session {
+  id: string;
+  startTime: number;
+  endTime?: number;
+  // Add other session-specific fields if needed
+}
+
+interface Query {
+  id: string;
+  sessionId: string;
+  timestamp: number;
+  type: 'basic' | 'reasoning' | 'research'; // Example query types
+  data: any; // This can be more specific based on actual query data structure
+  responseTime?: number;
+}
+
+interface PerformanceEntry {
+  id: string;
+  timestamp: number;
+  fps: number;
+  frameTime: number;
+  memoryUsage: number;
+  // Add other performance metrics as needed
+}
+
+interface Interaction {
+  id: string;
+  sessionId: string;
+  timestamp: number;
+  type: string; // e.g., 'voice_command', 'panel_manipulation'
+  data: any; // Specific data for the interaction type
+}
+
+interface AnalyticsStore {
+  sessions: Session[];
+  queries: Query[];
+  performance: PerformanceEntry[];
+  interactions: Interaction[];
+}
+
 const router = Router()
 
 // In-memory analytics store (in production, use database)
-const analytics = {
+const analytics: AnalyticsStore = {
   sessions: [],
   queries: [],
   performance: [],

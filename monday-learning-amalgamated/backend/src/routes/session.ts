@@ -48,7 +48,8 @@ router.post('/end', async (req, res) => {
     const { sessionId } = req.body
     
     if (!sessionId || !sessions.has(sessionId)) {
-      return res.status(404).json({ success: false, error: 'Session not found' })
+      res.status(404).json({ success: false, error: 'Session not found' })
+      return
     }
     
     const sessionData = sessions.get(sessionId)
@@ -81,7 +82,8 @@ router.get('/status/:sessionId', async (req, res) => {
     const { sessionId } = req.params
     
     if (!sessionId || !sessions.has(sessionId)) {
-      return res.status(404).json({ success: false, error: 'Session not found' })
+      res.status(404).json({ success: false, error: 'Session not found' })
+      return
     }
     
     const sessionData = sessions.get(sessionId)
@@ -103,7 +105,8 @@ router.put('/update/:sessionId', async (req, res) => {
     const updates = req.body
     
     if (!sessionId || !sessions.has(sessionId)) {
-      return res.status(404).json({ success: false, error: 'Session not found' })
+      res.status(404).json({ success: false, error: 'Session not found' })
+      return
     }
     
     const sessionData = sessions.get(sessionId)

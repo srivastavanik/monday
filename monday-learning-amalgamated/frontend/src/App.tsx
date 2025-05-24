@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useState, useCallback } from 'react'
 import { Canvas } from '@react-three/fiber'
 import { XR, Controllers, Hands } from '@react-three/xr'
 import MondayScene from './components/MondayScene'
@@ -10,15 +10,21 @@ import { useMondayStore } from './store/mondayStore'
 import { useVoiceRecognition } from './hooks/useVoiceRecognition'
 import { useWebSocketConnection } from './hooks/useWebSocket'
 import { usePerformanceMonitor } from './hooks/usePerformanceMonitor'
+import { useTextToSpeech } from './hooks/useTextToSpeech'
 
 const App: React.FC = () => {
   const [isInitialized, setIsInitialized] = useState(false)
   const [isVRSupported, setIsVRSupported] = useState(false)
+  const [lastProcessedTranscript, setLastProcessedTranscript] = useState('')
+  const [conversationActive, setConversationActive] = useState(false)
+  const [ttsStatus, setTtsStatus] = useState<'ready' | 'speaking' | 'failed' | 'no-audio'>('ready')
   const { 
     isConnected, 
     sessionState, 
     initializeSession,
-    setPerformanceMetrics 
+    setPerformanceMetrics,
+    addPanel,
+    setActivePanel
   } = useMondayStore()
 
   // Initialize WebXR and check support
@@ -52,11 +58,233 @@ const App: React.FC = () => {
     transcript,
     startListening,
     stopListening,
-    error: voiceError
+    error: voiceError,
+    resetTranscript
   } = useVoiceRecognition()
+
+  // Initialize text-to-speech
+  const { 
+    speak, 
+    isSpeaking, 
+    isPlaying,
+    stop: stopTTS,
+    error: ttsError,
+    initializeAudio
+  } = useTextToSpeech({
+    stability: 0.6,
+    similarityBoost: 0.8,
+    speed: 1.1
+  })
+
+  // Initialize audio on first user interaction
+  const [audioInitialized, setAudioInitialized] = useState(false)
+  
+  const handleUserInteraction = useCallback(async (): Promise<boolean> => {
+    if (!audioInitialized) {
+      try {
+        const success = await initializeAudio()
+        if (success) {
+          setAudioInitialized(true)
+          console.log('Audio initialized after user interaction')
+          return true
+        }
+      } catch (error) {
+        console.warn('Audio initialization failed:', error)
+      }
+    } else {
+      // Already initialized
+      return true
+    }
+    return false
+  }, [initializeAudio, audioInitialized])
 
   // Performance monitoring for Quest optimization
   const { fps, frameTime, memoryUsage } = usePerformanceMonitor()
+
+  // Process voice commands and send to backend
+  const processVoiceCommand = useCallback(async (command: string) => {
+    if (!socket || !socketConnected || !command.trim()) return
+
+    const normalizedCommand = command.toLowerCase().trim()
+    
+    // Send command if it contains "Monday" or if we're in an active conversation
+    if (normalizedCommand.includes('monday') || conversationActive) {
+      console.log('Processing voice command:', command)
+      
+      // Stop any currently playing TTS
+      stopTTS()
+      
+      // Voice recognition counts as user gesture - try to initialize audio
+      try {
+        const audioReady = await handleUserInteraction()
+        console.log('Audio ready for response:', audioReady)
+      } catch (error) {
+        console.warn('Audio initialization failed during voice command:', error)
+      }
+      
+      // Send command to backend
+      socket.emit('voice_command', {
+        command: command,
+        timestamp: Date.now()
+      })
+      
+      // Reset transcript after processing
+      resetTranscript()
+      setLastProcessedTranscript(command)
+    }
+  }, [socket, socketConnected, resetTranscript, stopTTS, conversationActive, handleUserInteraction])
+
+  // Monitor transcript changes and process commands
+  useEffect(() => {
+    if (transcript && transcript !== lastProcessedTranscript && transcript.length > 5) {
+      // Add a small delay to ensure the transcript is complete
+      const timer = setTimeout(() => {
+        processVoiceCommand(transcript)
+      }, 1000)
+      
+      return () => clearTimeout(timer)
+    }
+  }, [transcript, lastProcessedTranscript, processVoiceCommand])
+
+  // Handle WebSocket responses from backend
+  useEffect(() => {
+    if (!socket) return
+
+    const handleVoiceResponse = async (response: any) => {
+      console.log('Received voice response:', response)
+      
+      // Update conversation state
+      if (response.data?.conversationActive !== undefined) {
+        setConversationActive(response.data.conversationActive)
+      }
+      
+      // Stop listening immediately when Monday starts responding
+      if (isListening) {
+        stopListening()
+        console.log('Stopped listening - Monday is responding')
+      }
+      
+      // Create spatial panels if provided
+      if (response.data?.panels && response.data.panels.length > 0) {
+        console.log('Creating spatial panels:', response.data.panels)
+        response.data.panels.forEach((panelData: any) => {
+          addPanel(panelData)
+        })
+        // Set the main panel as active
+        const mainPanel = response.data.panels.find((p: any) => p.isActive)
+        if (mainPanel) {
+          setActivePanel(mainPanel.id)
+        }
+      }
+      
+      let ttsSucceeded = false
+      
+      try {
+        // Initialize audio if not already done
+        const audioReady = await handleUserInteraction()
+        console.log('Audio initialization result:', audioReady)
+        
+        if (audioReady) {
+          // Speak Monday's response
+          setTtsStatus('speaking')
+          await speak(response.message)
+          console.log('Monday finished speaking')
+          ttsSucceeded = true
+          
+          // Wait for audio to completely finish
+          const waitForAudioComplete = () => {
+            return new Promise<void>((resolve) => {
+              const checkAudio = () => {
+                if (!isSpeaking && !isPlaying) {
+                  resolve()
+                } else {
+                  setTimeout(checkAudio, 100)
+                }
+              }
+              checkAudio()
+            })
+          }
+          
+          await waitForAudioComplete()
+          setTtsStatus('ready')
+          
+          // Additional delay to prevent feedback
+          setTimeout(() => {
+            if (!isListening && !voiceError) {
+              startListening()
+              console.log('Resumed listening after TTS completed')
+            }
+          }, 1000)
+        } else {
+          console.warn('Audio not available, skipping TTS')
+          setTtsStatus('no-audio')
+          // Resume listening immediately if no audio
+          setTimeout(() => {
+            if (!isListening && !voiceError) {
+              startListening()
+              console.log('Resumed listening (no TTS played)')
+            }
+            // Clear no-audio status after a delay
+            setTimeout(() => setTtsStatus('ready'), 3000)
+          }, 500)
+        }
+        
+      } catch (error) {
+        console.error('TTS error:', error)
+        ttsSucceeded = false
+        setTtsStatus('failed')
+        
+        // Always resume listening after TTS error
+        setTimeout(() => {
+          if (!isListening && !voiceError) {
+            startListening()
+            console.log('Resumed listening after TTS error')
+          }
+          // Clear failed status after a delay
+          setTimeout(() => setTtsStatus('ready'), 3000)
+        }, 1000)
+      }
+      
+      // Log response data for debugging
+      if (response.data?.citations?.length > 0) {
+        console.log('Citations:', response.data.citations)
+      }
+      if (response.data?.reasoning?.length > 0) {
+        console.log('Reasoning steps:', response.data.reasoning)
+      }
+      if (response.data?.metadata) {
+        console.log('Response metadata:', response.data.metadata)
+        console.log('TTS Status:', ttsSucceeded ? 'SUCCESS' : 'FAILED')
+      }
+      
+      // Clear TTS status after timeout
+      if (ttsStatus !== 'ready') {
+        setTimeout(() => {
+          setTtsStatus('ready')
+        }, 5000) // Clear status after 5 seconds
+      }
+    }
+
+    const handleVoiceError = (error: any) => {
+      console.error('Voice command error from backend:', error)
+      
+      // Resume listening after error
+      setTimeout(() => {
+        if (!isListening && !voiceError) {
+          startListening()
+          console.log('Resumed listening after backend error')
+        }
+      }, 1000)
+    }
+
+    socket.on('voice_response', handleVoiceResponse)
+    socket.on('voice_error', handleVoiceError)
+
+    return () => {
+      socket.off('voice_response', handleVoiceResponse)
+      socket.off('voice_error', handleVoiceError)
+    }
+  }, [socket, speak, isListening, stopListening, startListening, voiceError, isSpeaking, isPlaying, addPanel, setActivePanel])
 
   // Update performance metrics in store
   useEffect(() => {
@@ -81,10 +309,74 @@ const App: React.FC = () => {
 
   // Auto-start voice recognition when session is ready
   useEffect(() => {
-    if (sessionState.isActive && !isListening && !voiceError) {
+    if (sessionState.isActive && !isListening && !voiceError && !isSpeaking && !isPlaying) {
       startListening()
     }
-  }, [sessionState.isActive, isListening, voiceError, startListening])
+  }, [sessionState.isActive, isListening, voiceError, startListening, isSpeaking, isPlaying])
+
+  // Monitor TTS status and reset if stuck
+  useEffect(() => {
+    const statusCheckTimer = setInterval(() => {
+      // If status says speaking but TTS isn't actually speaking/playing, reset it
+      if (ttsStatus === 'speaking' && !isSpeaking && !isPlaying) {
+        console.log('Resetting stuck TTS status from speaking to ready')
+        setTtsStatus('ready')
+      }
+      
+      // If status says failed or no-audio for too long, reset to ready
+      if ((ttsStatus === 'failed' || ttsStatus === 'no-audio') && Date.now() % 10000 < 1000) {
+        console.log('Auto-clearing TTS status:', ttsStatus)
+        setTtsStatus('ready')
+      }
+    }, 1000) // Check every second
+
+    return () => clearInterval(statusCheckTimer)
+  }, [ttsStatus, isSpeaking, isPlaying])
+
+  // Recovery mechanism: restart voice recognition if stuck
+  useEffect(() => {
+    const recoveryTimer = setInterval(() => {
+      // If we should be listening but aren't, and conversation is active, restart
+      if (conversationActive && !isListening && !voiceError && !isSpeaking && !isPlaying && sessionState.isActive) {
+        console.log('Recovery: restarting voice recognition')
+        startListening()
+      }
+    }, 5000) // Check every 5 seconds
+
+    return () => clearInterval(recoveryTimer)
+  }, [conversationActive, isListening, voiceError, isSpeaking, isPlaying, sessionState.isActive, startListening])
+
+  // Manual reset function for when system gets stuck
+  const manualReset = useCallback(async () => {
+    console.log('Manual reset triggered')
+    
+    // Stop all current activities
+    stopTTS()
+    stopListening()
+    
+    // Reset all states
+    setTtsStatus('ready')
+    setConversationActive(false)
+    resetTranscript()
+    
+    // Clear any pending timers by forcing a state reset
+    setTimeout(async () => {
+      // Try to reinitialize audio
+      try {
+        await handleUserInteraction()
+      } catch (error) {
+        console.warn('Audio reinitialization failed during reset:', error)
+      }
+      
+      // Restart voice recognition
+      setTimeout(() => {
+        if (!voiceError) {
+          startListening()
+          console.log('Voice recognition restarted after manual reset')
+        }
+      }, 1000)
+    }, 500)
+  }, [stopTTS, stopListening, resetTranscript, handleUserInteraction, startListening, voiceError])
 
   if (!isInitialized) {
     return <LoadingOverlay message="Initializing Monday..." />
@@ -138,7 +430,6 @@ const App: React.FC = () => {
         >
           <XR 
             referenceSpace="local-floor"
-            frameloop="always"
           >
             {/* Lighting setup for VR */}
             <ambientLight intensity={0.3} color="#20808D" />
@@ -166,6 +457,8 @@ const App: React.FC = () => {
           transcript={transcript}
           onStartListening={startListening}
           onStopListening={stopListening}
+          conversationActive={conversationActive}
+          onUserInteraction={handleUserInteraction}
         />
 
         {/* Connection Status Indicator */}
@@ -183,29 +476,189 @@ const App: React.FC = () => {
           {socketConnected ? 'Connected' : 'Disconnected'}
         </div>
 
-        {/* Performance Monitor (Development Only) */}
-        {process.env.NODE_ENV === 'development' && (
+        {/* Conversation Status Indicator */}
+        {conversationActive && (
           <div style={{
             position: 'fixed',
-            top: '1rem',
+            bottom: '1rem',
             left: '1rem',
-            padding: '0.5rem',
-            backgroundColor: 'rgba(9, 23, 23, 0.8)',
+            padding: '0.5rem 1rem',
+            backgroundColor: 'var(--true-turquoise)',
             color: 'var(--paper-white)',
-            fontSize: '0.75rem',
             borderRadius: '0.25rem',
-            fontFamily: 'monospace',
+            fontSize: '0.875rem',
+            zIndex: 1000,
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.5rem'
+          }}>
+            <div style={{
+              width: '8px',
+              height: '8px',
+              backgroundColor: 'var(--paper-white)',
+              borderRadius: '50%',
+              animation: 'pulse 2s ease-in-out infinite'
+            }} />
+            Conversation Active
+          </div>
+        )}
+
+        {/* TTS Status Indicator */}
+        {(isSpeaking || isPlaying) && (
+          <div style={{
+            position: 'fixed',
+            bottom: '3.5rem',
+            right: '1rem',
+            padding: '0.5rem 1rem',
+            backgroundColor: 'var(--true-turquoise)',
+            color: 'var(--paper-white)',
+            borderRadius: '0.25rem',
+            fontSize: '0.875rem',
+            zIndex: 1000,
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.5rem'
+          }}>
+            <div style={{
+              width: '8px',
+              height: '8px',
+              backgroundColor: 'var(--paper-white)',
+              borderRadius: '50%',
+              animation: 'pulse 1s ease-in-out infinite'
+            }} />
+            Monday Speaking
+          </div>
+        )}
+
+        {/* TTS Status Indicators */}
+        {ttsStatus === 'no-audio' && (
+          <div 
+            onClick={handleUserInteraction}
+            style={{
+              position: 'fixed',
+              bottom: '3.5rem',
+              right: '1rem',
+              padding: '0.5rem 1rem',
+              backgroundColor: '#f39c12',
+              color: 'var(--paper-white)',
+              borderRadius: '0.25rem',
+              fontSize: '0.875rem',
+              zIndex: 1000,
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.5rem',
+              cursor: 'pointer'
+            }}
+          >
+            🔇 Audio not initialized - click to enable
+          </div>
+        )}
+
+        {ttsStatus === 'failed' && (
+          <div 
+            onClick={handleUserInteraction}
+            style={{
+              position: 'fixed',
+              bottom: '3.5rem',
+              right: '1rem',
+              padding: '0.5rem 1rem',
+              backgroundColor: '#dc3545',
+              color: 'var(--paper-white)',
+              borderRadius: '0.25rem',
+              fontSize: '0.875rem',
+              zIndex: 1000,
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.5rem',
+              cursor: 'pointer'
+            }}
+          >
+            🚫 Voice synthesis failed - click to retry
+          </div>
+        )}
+
+        {/* TTS Error Indicator */}
+        {ttsError && (
+          <div style={{
+            position: 'fixed',
+            bottom: '3.5rem',
+            right: '1rem',
+            padding: '0.5rem 1rem',
+            backgroundColor: '#dc3545',
+            color: 'var(--paper-white)',
+            borderRadius: '0.25rem',
+            fontSize: '0.875rem',
             zIndex: 1000
           }}>
+            TTS Error: {ttsError}
+          </div>
+        )}
+
+        {/* Manual Reset Button - visible when system might be stuck */}
+        {(ttsStatus === 'speaking' && !isSpeaking && !isPlaying) || 
+         (conversationActive && !isListening && !isSpeaking && !isPlaying) && (
+          <div style={{
+            position: 'fixed',
+            bottom: '8rem',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            zIndex: 1001
+          }}>
+            <button
+              onClick={manualReset}
+              style={{
+                padding: '0.75rem 1.5rem',
+                backgroundColor: '#dc3545',
+                color: 'var(--paper-white)',
+                border: 'none',
+                borderRadius: '0.5rem',
+                fontSize: '0.875rem',
+                cursor: 'pointer',
+                fontWeight: 'bold'
+              }}
+            >
+              🔄 Reset System
+            </button>
+          </div>
+        )}
+
+        {/* Performance Monitor (Development Only) */}
+        {window.location.hostname === 'localhost' && (
+          <div 
+            onClick={manualReset}
+            style={{
+              position: 'fixed',
+              top: '1rem',
+              left: '1rem',
+              padding: '0.5rem',
+              backgroundColor: 'rgba(9, 23, 23, 0.8)',
+              color: 'var(--paper-white)',
+              fontSize: '0.75rem',
+              borderRadius: '0.25rem',
+              fontFamily: 'monospace',
+              zIndex: 1000,
+              cursor: 'pointer',
+              border: ttsStatus === 'speaking' && !isSpeaking && !isPlaying ? '2px solid #dc3545' : '1px solid #20808D'
+            }}
+            title="Click to reset system if stuck"
+          >
             <div>FPS: {fps}</div>
             <div>Frame: {frameTime.toFixed(2)}ms</div>
             <div>Memory: {memoryUsage.toFixed(1)}MB</div>
             <div>VR: {isVRSupported ? 'Yes' : 'No'}</div>
+            <div>TTS: {isSpeaking ? 'Speaking' : isPlaying ? 'Playing' : 'Ready'}</div>
+            <div>Conv: {conversationActive ? 'Active' : 'Waiting'}</div>
+            <div>Audio: {audioInitialized ? 'Ready' : 'Not Init'}</div>
+            <div>Status: {ttsStatus}</div>
+            <div>Listen: {isListening ? 'ON' : 'OFF'}</div>
+            {(ttsStatus === 'speaking' && !isSpeaking && !isPlaying) && (
+              <div style={{ color: '#dc3545', fontWeight: 'bold' }}>⚠️ STUCK</div>
+            )}
           </div>
         )}
 
         {/* Instructions for first-time users */}
-        {!sessionState.hasCompletedIntro && (
+        {!sessionState.hasCompletedIntro && !conversationActive && (
           <div style={{
             position: 'fixed',
             top: '50%',
@@ -217,16 +670,36 @@ const App: React.FC = () => {
             borderRadius: '0.5rem',
             border: '2px solid var(--true-turquoise)',
             textAlign: 'center',
-            maxWidth: '400px',
+            maxWidth: '500px',
             zIndex: 2000
           }}>
             <h3 style={{ color: 'var(--true-turquoise)', marginBottom: '1rem' }}>
               Welcome to Monday
             </h3>
-            <p>Put on your headset and say "Monday, hello" to begin your learning journey.</p>
-            <p style={{ fontSize: '0.875rem', opacity: 0.8 }}>
-              Make sure microphone access is enabled.
+            <p><strong>Say "Monday, hello"</strong> to start your learning journey.</p>
+            <p style={{ fontSize: '0.875rem', margin: '1rem 0' }}>
+              After that, you can ask questions without saying "Monday" each time:
             </p>
+            <ul style={{ fontSize: '0.875rem', textAlign: 'left', color: 'var(--true-turquoise)' }}>
+              <li>"Monday, tell me about quantum physics"</li>
+              <li>"How does it work?" (no Monday needed)</li>
+              <li>"Think about machine learning algorithms"</li>
+              <li>"Research the latest developments"</li>
+            </ul>
+            <p style={{ fontSize: '0.75rem', opacity: 0.8, marginTop: '1rem' }}>
+              <strong>Important:</strong> For voice responses, click "Start Listening" first or speak 
+              "Monday, hello" to initialize audio.
+            </p>
+            {ttsError && (
+              <p style={{ fontSize: '0.75rem', color: '#dc3545', marginTop: '0.5rem' }}>
+                Audio issue: {ttsError}
+              </p>
+            )}
+            {ttsStatus === 'no-audio' && (
+              <p style={{ fontSize: '0.75rem', color: '#f39c12', marginTop: '0.5rem' }}>
+                ⚠️ Audio not initialized - Monday can hear you but can't speak back yet
+              </p>
+            )}
           </div>
         )}
       </div>
