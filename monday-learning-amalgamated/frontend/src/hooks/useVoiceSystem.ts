@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { VoiceSystemController, SystemState, SystemStatus } from '../controllers/VoiceSystemController'
+import { CommandProcessor, ConversationContext } from '../controllers/CommandProcessor'
 
 interface UseVoiceSystemOptions {
   onCommand?: (command: string) => void
@@ -14,6 +15,7 @@ interface UseVoiceSystemReturn {
   isPlaying: boolean
   transcript: string
   conversationActive: boolean
+  conversationContext: ConversationContext
   error: string | null
   systemStatus: SystemStatus
   
@@ -26,15 +28,23 @@ interface UseVoiceSystemReturn {
   // Manual overrides (for fallback UI)
   forceStartListening: () => Promise<void>
   forceStop: () => void
+  endConversation: () => void
 }
 
 export const useVoiceSystem = (options: UseVoiceSystemOptions = {}): UseVoiceSystemReturn => {
   const controllerRef = useRef<VoiceSystemController | null>(null)
+  const commandProcessorRef = useRef<CommandProcessor | null>(null)
   
   // React state that mirrors controller state
   const [systemState, setSystemState] = useState<SystemState>(SystemState.IDLE)
   const [transcript, setTranscript] = useState('')
-  const [conversationActive, setConversationActive] = useState(false)
+  const [conversationContext, setConversationContext] = useState<ConversationContext>({
+    active: false,
+    startTime: null,
+    lastCommandTime: null,
+    commandCount: 0,
+    conversationId: null
+  })
   const [error, setError] = useState<string | null>(null)
   const [systemStatus, setSystemStatus] = useState<SystemStatus>({
     recognitionActive: false,
@@ -45,9 +55,9 @@ export const useVoiceSystem = (options: UseVoiceSystemOptions = {}): UseVoiceSys
     lastError: null
   })
 
-  // Initialize controller
+  // Initialize controller and command processor
   useEffect(() => {
-    console.log('VoiceSystem: 🏗️ Initializing controller...')
+    console.log('VoiceSystem: 🏗️ Initializing controller and command processor...')
     
     const controller = new VoiceSystemController({
       stability: 0.6,
@@ -55,7 +65,9 @@ export const useVoiceSystem = (options: UseVoiceSystemOptions = {}): UseVoiceSys
       speed: 1.1
     })
 
-    // Set up callbacks
+    const commandProcessor = CommandProcessor.getInstance()
+
+    // Set up voice controller callbacks
     controller.setCallbacks({
       onStateChange: (state: SystemState) => {
         console.log('VoiceSystem: 📊 State change:', state)
@@ -64,7 +76,7 @@ export const useVoiceSystem = (options: UseVoiceSystemOptions = {}): UseVoiceSys
       onTranscriptChange: (newTranscript: string) => {
         console.log('VoiceSystem: 🎤 Transcript:', newTranscript)
         setTranscript(newTranscript)
-        // Command processing is now handled in App.tsx via useEffect to avoid stale closures
+        // Command processing is now handled by CommandProcessor
       },
       onError: (errorMsg: string) => {
         console.error('VoiceSystem: ❌ Error:', errorMsg)
@@ -72,17 +84,21 @@ export const useVoiceSystem = (options: UseVoiceSystemOptions = {}): UseVoiceSys
         if (options.onError) {
           options.onError(errorMsg)
         }
-      },
-      onConversationChange: (active: boolean) => {
-        console.log('VoiceSystem: 💬 Conversation active:', active)
-        setConversationActive(active)
       }
     })
 
+    // Subscribe to command processor for conversation state
+    const unsubscribeCommandProcessor = commandProcessor.subscribe((context: ConversationContext) => {
+      console.log('VoiceSystem: 💬 Conversation context updated:', context)
+      setConversationContext(context)
+    })
+
     controllerRef.current = controller
+    commandProcessorRef.current = commandProcessor
     
-    // Make controller globally accessible for debugging
+    // Make both globally accessible for debugging
     ;(window as any).voiceController = controller
+    ;(window as any).commandProcessor = commandProcessor
 
     // Start the system
     controller.startConversation().catch((err) => {
@@ -92,15 +108,18 @@ export const useVoiceSystem = (options: UseVoiceSystemOptions = {}): UseVoiceSys
 
     return () => {
       console.log('VoiceSystem: 🧹 Cleaning up controller...')
+      unsubscribeCommandProcessor()
       if (controllerRef.current) {
         controllerRef.current.emergencyReset()
         controllerRef.current = null
       }
+      commandProcessorRef.current = null
       delete (window as any).voiceController
+      delete (window as any).commandProcessor
     }
   }, [])
 
-  // Poll system status for real-time updates
+  // Poll system status for real-time updates (no conversation state sync needed)
   useEffect(() => {
     const interval = setInterval(() => {
       if (controllerRef.current) {
@@ -210,7 +229,8 @@ export const useVoiceSystem = (options: UseVoiceSystemOptions = {}): UseVoiceSys
     isSpeaking,
     isPlaying,
     transcript,
-    conversationActive,
+    conversationActive: conversationContext.active,
+    conversationContext,
     error,
     systemStatus,
     
@@ -222,6 +242,12 @@ export const useVoiceSystem = (options: UseVoiceSystemOptions = {}): UseVoiceSys
     
     // Manual overrides
     forceStartListening,
-    forceStop
+    forceStop,
+    endConversation: () => {
+      console.log('VoiceSystem: 🔄 Ending conversation...')
+      if (controllerRef.current) {
+        controllerRef.current.emergencyReset().catch(console.error)
+      }
+    }
   }
 } 

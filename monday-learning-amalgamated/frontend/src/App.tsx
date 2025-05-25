@@ -53,6 +53,16 @@ const App: React.FC = () => {
   // Initialize WebSocket connection
   const { socket, isConnected: socketConnected } = useWebSocketConnection()
 
+  // Make socket globally accessible for debugging
+  useEffect(() => {
+    if (socket) {
+      ;(window as any).socket = socket
+    }
+    return () => {
+      delete (window as any).socket
+    }
+  }, [socket])
+
   // Initialize the unified voice system
   const {
     systemState,
@@ -61,13 +71,15 @@ const App: React.FC = () => {
     isPlaying,
     transcript,
     conversationActive,
+    conversationContext,
     error: voiceError,
     systemStatus,
     handleCommand,
     handleTTSResponse,
     emergencyReset,
     forceStartListening,
-    forceStop
+    forceStop,
+    endConversation
   } = useVoiceSystem({
     onError: (error) => {
       console.error('🌟 App: Voice system error:', error)
@@ -157,75 +169,7 @@ const App: React.FC = () => {
     }
   }, [isInitialized, socketConnected, isVRSupported, initializeSession])
 
-  // Process voice commands when transcript changes (avoids stale closure issues)
-  useEffect(() => {
-    if (!transcript || transcript === lastProcessedTranscript) {
-      return
-    }
-
-    console.log('🌟 App: New transcript detected, processing command:', {
-      transcript: transcript,
-      lastProcessed: lastProcessedTranscript,
-      socketConnected,
-      conversationActive,
-      hasSocket: !!socket,
-      socketId: socket?.id || 'no-socket'
-    })
-
-    // Check prerequisites with current values (not stale closures)
-    if (!socket || !socketConnected || !transcript.trim()) {
-      console.log('🌟 App: Command processing blocked - missing prerequisites:', {
-        hasSocket: !!socket,
-        socketConnected,
-        hasCommand: !!transcript.trim(),
-        socketReadyState: socket?.connected
-      })
-      return
-    }
-
-    const normalizedCommand = transcript.toLowerCase().trim()
-    
-    // Check if this should trigger Monday (either explicit trigger or in conversation)
-    const isExplicitTrigger = normalizedCommand.includes('hey monday')
-    const shouldProcess = isExplicitTrigger || conversationActive
-    
-    console.log('🌟 App: Command filtering:', {
-      command: normalizedCommand.substring(0, 50),
-      isExplicitTrigger,
-      conversationActive,
-      shouldProcess
-    })
-
-    if (shouldProcess) {
-      console.log('🌟 App: 🎯 Processing voice command:', {
-        command: transcript,
-        isExplicitTrigger,
-        conversationActive,
-        commandLength: transcript.length
-      })
-      
-      console.log('🌟 App: 📤 Sending command to backend via WebSocket')
-      
-      try {
-        socket.emit('voice_command', {
-          command: transcript,
-          timestamp: Date.now(),
-          conversationActive: conversationActive,
-          isExplicitTrigger: isExplicitTrigger
-        })
-        
-        setLastProcessedTranscript(transcript)
-        console.log('🌟 App: ✅ Command sent to backend successfully')
-      } catch (error) {
-        console.error('🌟 App: ❌ Failed to send command to backend:', error)
-      }
-    } else {
-      console.log('🌟 App: ❌ Command ignored - no trigger and not in conversation:', {
-        command: normalizedCommand.substring(0, 50),
-        needsTrigger: !isExplicitTrigger && !conversationActive
-      })
-    }
-  }, [transcript, lastProcessedTranscript, socket, socketConnected, conversationActive])
+  // Command processing is now handled by CommandProcessor - no useEffect needed here
 
   if (!isInitialized) {
     return <LoadingOverlay message="Initializing Monday..." />

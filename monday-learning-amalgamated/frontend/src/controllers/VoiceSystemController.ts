@@ -81,6 +81,8 @@ interface TTSConfig {
   speed?: number
 }
 
+import { CommandProcessor } from './CommandProcessor'
+
 class VoiceSystemController {
   private state: SystemState = SystemState.IDLE
   private recognition: SpeechRecognition | null = null
@@ -88,18 +90,19 @@ class VoiceSystemController {
   private transitionInProgress = false
   private audioContext: AudioContext | null = null
   private currentTranscript = ''
-  private conversationActive = false
   
   // Event callbacks
   private onStateChange?: (state: SystemState) => void
   private onTranscriptChange?: (transcript: string) => void
   private onError?: (error: string) => void
-  private onConversationChange?: (active: boolean) => void
   
   // TTS WebSocket
   private ttsWebSocket: WebSocket | null = null
   private allAudioBuffers: ArrayBuffer[] = []
   private ttsConfig: TTSConfig
+  
+  // Command processor for handling all command logic
+  private commandProcessor = CommandProcessor.getInstance()
   
   // Single source of truth for all states
   private systemStatus: SystemStatus = {
@@ -113,17 +116,23 @@ class VoiceSystemController {
 
   constructor(ttsConfig: TTSConfig = {}) {
     this.ttsConfig = {
-      voiceId: (import.meta as any).env?.VITE_ELEVENLABS_VOICE_ID || 'XrExE9yKIg1WjnnlVkGX',
+      voiceId: 'pNInz6obpgDQGcFmaJgB', // Adam voice
       apiKey: (import.meta as any).env?.VITE_ELEVENLABS_API_KEY || '',
       outputFormat: 'mp3_44100_128',
       stability: 0.6,
       similarityBoost: 0.8,
-      speed: 1.1,
+      speed: 1.0,
       ...ttsConfig
     }
     
-    // Global watchdog for stuck states
+    // Start the watchdog immediately
     this.startWatchdog()
+    
+    console.log('VoiceController: 🏗️ Initialized with TTS config:', {
+      hasApiKey: !!this.ttsConfig.apiKey,
+      voiceId: this.ttsConfig.voiceId,
+      outputFormat: this.ttsConfig.outputFormat
+    })
   }
 
   // ============ STATE MANAGEMENT ============
@@ -143,10 +152,6 @@ class VoiceSystemController {
   public getCurrentTranscript(): string {
     return this.currentTranscript
   }
-  
-  public isConversationActive(): boolean {
-    return this.conversationActive
-  }
 
   // ============ EVENT HANDLERS ============
   
@@ -154,12 +159,10 @@ class VoiceSystemController {
     onStateChange?: (state: SystemState) => void
     onTranscriptChange?: (transcript: string) => void
     onError?: (error: string) => void
-    onConversationChange?: (active: boolean) => void
   }) {
     this.onStateChange = callbacks.onStateChange
     this.onTranscriptChange = callbacks.onTranscriptChange
     this.onError = callbacks.onError
-    this.onConversationChange = callbacks.onConversationChange
   }
 
   // ============ BROWSER-SPECIFIC FIXES ============
@@ -251,6 +254,9 @@ class VoiceSystemController {
           console.log('VoiceController: 🎤 Final transcript:', finalTranscript)
           this.currentTranscript = finalTranscript
           this.onTranscriptChange?.(finalTranscript)
+          
+          // Send directly to command processor - no filtering here
+          this.commandProcessor.queueCommand(finalTranscript, Date.now())
         }
       }
       
@@ -345,22 +351,44 @@ class VoiceSystemController {
     return new Promise((resolve, reject) => {
       const wsUrl = `wss://api.elevenlabs.io/v1/text-to-speech/${this.ttsConfig.voiceId}/stream-input?output_format=${this.ttsConfig.outputFormat}&auto_mode=true`
       
+      console.log('VoiceController: 🔗 Connecting to ElevenLabs WebSocket...')
       this.ttsWebSocket = new WebSocket(wsUrl)
       let hasFinished = false
+      let connectionTimeout: number | null = null
+      
+      // Set connection timeout
+      connectionTimeout = setTimeout(() => {
+        if (!hasFinished && this.ttsWebSocket) {
+          console.error('VoiceController: ❌ TTS WebSocket connection timeout')
+          this.ttsWebSocket.close()
+          reject(new Error('TTS connection timeout'))
+        }
+      }, 10000) // 10 second timeout
       
       this.ttsWebSocket.onopen = () => {
-        console.log('VoiceController: 🔗 TTS WebSocket connected')
-        this.ttsWebSocket!.send(JSON.stringify({
-          text: ' ',
-          voice_settings: { 
-            stability: this.ttsConfig.stability, 
-            similarity_boost: this.ttsConfig.similarityBoost, 
-            speed: this.ttsConfig.speed 
-          },
-          xi_api_key: this.ttsConfig.apiKey
-        }))
-        this.ttsWebSocket!.send(JSON.stringify({ text: text + ' ', try_trigger_generation: true }))
-        this.ttsWebSocket!.send(JSON.stringify({ text: '' }))
+        console.log('VoiceController: 🔗 TTS WebSocket connected successfully')
+        if (connectionTimeout) {
+          clearTimeout(connectionTimeout)
+          connectionTimeout = null
+        }
+        
+        try {
+          this.ttsWebSocket!.send(JSON.stringify({
+            text: ' ',
+            voice_settings: { 
+              stability: this.ttsConfig.stability, 
+              similarity_boost: this.ttsConfig.similarityBoost, 
+              speed: this.ttsConfig.speed 
+            },
+            xi_api_key: this.ttsConfig.apiKey
+          }))
+          this.ttsWebSocket!.send(JSON.stringify({ text: text + ' ', try_trigger_generation: true }))
+          this.ttsWebSocket!.send(JSON.stringify({ text: '' }))
+          console.log('VoiceController: 📤 TTS generation request sent')
+        } catch (sendError) {
+          console.error('VoiceController: ❌ Failed to send TTS request:', sendError)
+          reject(new Error('Failed to send TTS request'))
+        }
       }
       
       this.ttsWebSocket.onmessage = (event) => {
@@ -370,12 +398,27 @@ class VoiceSystemController {
           if (data.audio) {
             const audioBuffer = this.base64ToArrayBuffer(data.audio)
             this.allAudioBuffers.push(audioBuffer)
+            console.log(`VoiceController: 🎵 Audio chunk ${this.allAudioBuffers.length} received`)
           }
           
           if (data.isFinal === true) {
             console.log(`VoiceController: ✅ TTS generation complete. ${this.allAudioBuffers.length} chunks received`)
             hasFinished = true
+            if (connectionTimeout) {
+              clearTimeout(connectionTimeout)
+              connectionTimeout = null
+            }
             resolve()
+          }
+          
+          if (data.error) {
+            console.error('VoiceController: ❌ ElevenLabs API error:', data.error)
+            hasFinished = true
+            if (connectionTimeout) {
+              clearTimeout(connectionTimeout)
+              connectionTimeout = null
+            }
+            reject(new Error(`ElevenLabs API Error: ${data.error}`))
           }
         } catch (err) {
           console.error('VoiceController: ❌ TTS message processing error:', err)
@@ -384,16 +427,34 @@ class VoiceSystemController {
       
       this.ttsWebSocket.onerror = (event) => {
         console.error('VoiceController: ❌ TTS WebSocket error:', event)
-        reject(new Error('TTS WebSocket error'))
+        if (connectionTimeout) {
+          clearTimeout(connectionTimeout)
+          connectionTimeout = null
+        }
+        reject(new Error('TTS WebSocket connection error'))
       }
       
       this.ttsWebSocket.onclose = (event) => {
         console.log(`VoiceController: 🔌 TTS WebSocket closed. Code: ${event.code}, Reason: "${event.reason}"`)
+        if (connectionTimeout) {
+          clearTimeout(connectionTimeout)
+          connectionTimeout = null
+        }
+        
         if (!hasFinished) {
-          if (event.code === 1008 || event.reason.includes('quota')) {
-            reject(new Error(`ElevenLabs API Error: ${event.reason}`))
+          // Provide specific error messages based on close codes
+          if (event.code === 1008) {
+            reject(new Error(`ElevenLabs API Error: ${event.reason || 'Invalid request'}`))
+          } else if (event.code === 1005) {
+            reject(new Error('ElevenLabs connection failed - please check API key and internet connection'))
+          } else if (event.code === 1006) {
+            reject(new Error('ElevenLabs connection lost unexpectedly'))
+          } else if (event.reason && event.reason.includes('quota')) {
+            reject(new Error(`ElevenLabs API quota exceeded: ${event.reason}`))
+          } else if (event.reason && event.reason.includes('auth')) {
+            reject(new Error(`ElevenLabs authentication failed: ${event.reason}`))
           } else {
-            reject(new Error('TTS WebSocket closed prematurely'))
+            reject(new Error(`TTS WebSocket closed prematurely (Code: ${event.code})`))
           }
         }
       }
@@ -541,38 +602,75 @@ class VoiceSystemController {
   public async handleTTSResponse(text: string): Promise<void> {
     console.log('VoiceController: 🔊 Handling TTS response...')
     
-    // Set conversation active after any interaction
-    if (!this.conversationActive) {
-      this.conversationActive = true
-      this.onConversationChange?.(true)
-    }
-    
-    await this.transitionTo(SystemState.PLAYING_TTS, async () => {
-      await this.playTTSWithGuaranteedCompletion(text)
-    })
-    
-    // Transition to active listening after TTS
-    await this.transitionTo(SystemState.ACTIVE_LISTENING, async () => {
-      // Extra delay to ensure audio device is released
-      await new Promise(resolve => setTimeout(resolve, 300))
+    try {
+      await this.transitionTo(SystemState.PLAYING_TTS, async () => {
+        await this.playTTSWithGuaranteedCompletion(text)
+      })
       
-      // Try up to 3 times to restart recognition
-      let attempts = 0
-      let success = false
-      
-      while (attempts < 3 && !success) {
-        success = await this.ensureRecognitionActive()
-        if (!success) {
-          attempts++
-          console.warn(`VoiceController: ⚠️ Recognition restart attempt ${attempts} failed`)
-          await new Promise(resolve => setTimeout(resolve, 500 * attempts))
+      // TTS succeeded, transition to active listening
+      await this.transitionTo(SystemState.ACTIVE_LISTENING, async () => {
+        // Extra delay to ensure audio device is released
+        await new Promise(resolve => setTimeout(resolve, 500))
+        
+        // Try up to 3 times to restart recognition
+        let attempts = 0
+        let success = false
+        
+        while (attempts < 3 && !success) {
+          success = await this.ensureRecognitionActive()
+          if (!success) {
+            attempts++
+            console.warn(`VoiceController: ⚠️ Recognition restart attempt ${attempts} failed`)
+            await new Promise(resolve => setTimeout(resolve, 500 * attempts))
+          }
         }
+        
+        if (!success) {
+          console.warn('VoiceController: ⚠️ Failed to restart recognition, but continuing conversation')
+          // Don't throw error - just log warning and continue
+        }
+      })
+      
+    } catch (ttsError) {
+      console.warn('VoiceController: ⚠️ TTS failed, continuing conversation without audio:', ttsError)
+      
+      // TTS failed, but maintain conversation state and continue listening
+      // This is critical - don't reset conversation on TTS failure
+      try {
+        await this.transitionTo(SystemState.ACTIVE_LISTENING, async () => {
+          // Extra delay to ensure audio device is released
+          await new Promise(resolve => setTimeout(resolve, 800))
+          
+          // Try to restart recognition despite TTS failure
+          let attempts = 0
+          let success = false
+          
+          while (attempts < 3 && !success) {
+            success = await this.ensureRecognitionActive()
+            if (!success) {
+              attempts++
+              console.warn(`VoiceController: ⚠️ Recognition restart after TTS failure, attempt ${attempts}`)
+              await new Promise(resolve => setTimeout(resolve, 700 * attempts))
+            }
+          }
+          
+          if (!success) {
+            console.warn('VoiceController: ⚠️ Recognition restart failed, but keeping conversation active')
+            // Even if recognition fails, keep conversation active so user can try manual restart
+          }
+        })
+      } catch (recoveryError) {
+        console.error('VoiceController: ❌ Recovery after TTS failure also failed:', recoveryError)
+        // Force transition to WAITING_FOR_ACTIVATION instead of ERROR to keep system usable
+        this.state = SystemState.WAITING_FOR_ACTIVATION
+        this.updateLastTransition()
+        this.onStateChange?.(this.state)
       }
       
-      if (!success) {
-        throw new Error('Failed to restart recognition after 3 attempts')
-      }
-    })
+      // Show user-friendly error but keep conversation going
+      this.systemStatus.lastError = 'TTS temporarily unavailable, but conversation continues'
+      this.onError?.('TTS temporarily unavailable, but conversation continues')
+    }
   }
 
   // ============ EMERGENCY RECOVERY ============
@@ -580,11 +678,14 @@ class VoiceSystemController {
   public async emergencyReset(): Promise<void> {
     console.log('VoiceController: 🚨 EMERGENCY RECOVERY INITIATED')
     
-    // Clear transition queue
+    // Preserve conversation state if it was active
+    const wasInConversation = this.commandProcessor.isConversationActive()
+    
+    // Clear transition queue and reset flags
     this.stateTransitionQueue = []
     this.transitionInProgress = false
     
-    // Kill everything
+    // Kill everything gracefully
     if (this.recognition) {
       try { 
         const fixes = this.getBrowserSpecificFixes()
@@ -608,7 +709,7 @@ class VoiceSystemController {
       window.speechSynthesis.cancel()
     }
     
-    // Clear all state
+    // Clear system status but preserve conversation state
     this.systemStatus = {
       recognitionActive: false,
       ttsPlaying: false,
@@ -619,7 +720,6 @@ class VoiceSystemController {
     }
     
     this.currentTranscript = ''
-    this.conversationActive = false
     this.allAudioBuffers = []
     
     // Wait for browser to recover
@@ -633,12 +733,38 @@ class VoiceSystemController {
     } catch (e) {
       console.error('VoiceController: ❌ Microphone permission lost:', e)
       this.systemStatus.lastError = 'Microphone permission lost'
+      // If microphone permission is lost, we have to reset conversation
+      this.commandProcessor.setConversationActive(false)
     }
     
     // Restart from clean state
     this.state = SystemState.IDLE
     this.onStateChange?.(this.state)
-    this.onConversationChange?.(false)
+    
+    // Restore conversation state if it was active and we have microphone access
+    if (wasInConversation && !this.systemStatus.lastError) {
+      this.commandProcessor.setConversationActive(true)
+      console.log('VoiceController: 💬 Conversation state preserved after emergency recovery')
+      
+      // Automatically restart conversation
+      try {
+        await this.startConversation()
+        console.log('VoiceController: 🔄 Conversation automatically restarted after recovery')
+      } catch (restartError) {
+        console.warn('VoiceController: ⚠️ Failed to auto-restart conversation after recovery:', restartError)
+        // Set to waiting state so user can manually restart
+        this.state = SystemState.WAITING_FOR_ACTIVATION
+        this.onStateChange?.(this.state)
+      }
+    } else {
+      this.commandProcessor.setConversationActive(false)
+      // Start in waiting state for new conversation
+      try {
+        await this.startConversation()
+      } catch (startError) {
+        console.warn('VoiceController: ⚠️ Failed to start conversation after recovery:', startError)
+      }
+    }
     
     console.log('VoiceController: ✅ Emergency recovery completed')
   }

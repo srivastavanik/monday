@@ -204,6 +204,103 @@ const DiagnosticOverlay: React.FC<DiagnosticOverlayProps> = ({
         >
           🚨 EMERGENCY RESET
         </button>
+        
+        <button
+          onClick={() => {
+            const controller = (window as any).voiceController
+            if (controller) {
+              // Manually activate conversation for testing
+              controller.conversationActive = true
+              controller.onConversationChange?.(true)
+              console.log('🔧 Diagnostic: Manually activated conversation')
+            }
+          }}
+          style={{
+            fontSize: '0.6rem',
+            padding: '0.3rem 0.6rem',
+            backgroundColor: conversationActive ? '#666' : '#44ff44',
+            color: conversationActive ? '#ccc' : '#000',
+            border: 'none',
+            borderRadius: '0.25rem',
+            cursor: 'pointer'
+          }}
+        >
+          💬 Force Conversation
+        </button>
+        
+        <button
+          onClick={() => {
+            const commandProcessor = (window as any).commandProcessor
+            if (commandProcessor) {
+              console.log('🔧 Diagnostic: Manually starting conversation via CommandProcessor')
+              commandProcessor.setConversationActive(true)
+            } else {
+              console.error('🔧 Diagnostic: No CommandProcessor found')
+            }
+          }}
+          style={{
+            fontSize: '0.6rem',
+            padding: '0.3rem 0.6rem',
+            backgroundColor: '#00aa44',
+            color: '#fff',
+            border: 'none',
+            borderRadius: '0.25rem',
+            cursor: 'pointer'
+          }}
+        >
+          🎯 Force via Processor
+        </button>
+        
+        <button
+          onClick={() => {
+            const socket = (window as any).socket || (document as any).socket
+            if (socket) {
+              console.log('🔧 Diagnostic: Sending test command to backend')
+              socket.emit('voice_command', {
+                command: 'test command from diagnostic panel',
+                timestamp: Date.now(),
+                conversationActive: true,
+                isExplicitTrigger: false
+              })
+            } else {
+              console.error('🔧 Diagnostic: No socket found')
+            }
+          }}
+          style={{
+            fontSize: '0.6rem',
+            padding: '0.3rem 0.6rem',
+            backgroundColor: '#0088ff',
+            color: '#fff',
+            border: 'none',
+            borderRadius: '0.25rem',
+            cursor: 'pointer'
+          }}
+        >
+          🧪 Test Backend
+        </button>
+        
+        <button
+          onClick={() => {
+            const commandProcessor = (window as any).commandProcessor
+            if (commandProcessor) {
+              console.log('🔧 Diagnostic: Queuing test command via CommandProcessor')
+              commandProcessor.queueCommand('test command from diagnostic', Date.now())
+            } else {
+              console.error('🔧 Diagnostic: No CommandProcessor found')
+            }
+          }}
+          style={{
+            fontSize: '0.6rem',
+            padding: '0.3rem 0.6rem',
+            backgroundColor: '#aa4400',
+            color: '#fff',
+            border: 'none',
+            borderRadius: '0.25rem',
+            cursor: 'pointer'
+          }}
+        >
+          🔄 Queue Test
+        </button>
       </div>
 
       {/* Detection Warnings */}
@@ -248,6 +345,41 @@ const DiagnosticOverlay: React.FC<DiagnosticOverlayProps> = ({
         fontStyle: 'italic'
       }}>
         Click anywhere to update • This panel auto-refreshes every 100ms
+      </div>
+
+      {/* System Health Section */}
+      <div style={{ marginBottom: '15px', padding: '10px', backgroundColor: '#1a1a1a', borderRadius: '6px' }}>
+        <h4 style={{ margin: '0 0 8px 0', color: '#20808D', fontSize: '14px' }}>System Health</h4>
+        <div style={{ fontSize: '12px', lineHeight: '1.4' }}>
+          <div style={{ color: systemStatus.recognitionActive ? '#4ade80' : '#ef4444' }}>
+            Recognition: {systemStatus.recognitionActive ? '✅' : '❌'}
+          </div>
+          <div style={{ color: systemStatus.ttsGenerating ? '#f59e0b' : systemStatus.ttsPlaying ? '#22c55e' : '#64748b' }}>
+            TTS Gen: {systemStatus.ttsGenerating ? '❌' : '✅'} | TTS Play: {systemStatus.ttsPlaying ? '❌' : '✅'}
+          </div>
+          <div style={{ color: conversationActive ? '#4ade80' : '#64748b' }}>
+            Conversation: {conversationActive ? '✅ ACTIVE' : '❌ INACTIVE'}
+          </div>
+          <div style={{ color: '#64748b' }}>
+            Last Transition: {Math.round(timeSinceLastTransition / 1000)}s ago
+          </div>
+        </div>
+      </div>
+
+      {/* Conversation Persistence Info */}
+      <div style={{ marginBottom: '15px', padding: '10px', backgroundColor: '#1a1a1a', borderRadius: '6px' }}>
+        <h4 style={{ margin: '0 0 8px 0', color: '#20808D', fontSize: '14px' }}>Conversation Persistence</h4>
+        <div style={{ fontSize: '12px', lineHeight: '1.4' }}>
+          <div style={{ color: conversationActive ? '#4ade80' : '#ef4444' }}>
+            State: {conversationActive ? 'MAINTAINED' : 'RESET'}
+          </div>
+          <div style={{ color: '#64748b' }}>
+            Follow-ups: {conversationActive ? 'ENABLED' : 'DISABLED'}
+          </div>
+          <div style={{ color: '#64748b' }}>
+            Error Count: {systemStatus.errorCount}
+          </div>
+        </div>
       </div>
     </div>
   )

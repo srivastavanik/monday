@@ -19,7 +19,7 @@ let logger: any = null;
 
 async function initializeServices() {
   try {
-    const loggerModule = await import('./utils/logger.js');
+    const loggerModule = await import('./utils/logger');
     logger = loggerModule.logger;
     console.log('[BACKEND LOG] Logger initialized successfully');
   } catch (error) {
@@ -32,7 +32,7 @@ async function initializeServices() {
   }
 
   try {
-    const perplexityModule = await import('./services/perplexity.js');
+    const perplexityModule = await import('./services/perplexity');
     perplexityService = perplexityModule.perplexityService;
     console.log('[BACKEND LOG] Perplexity service initialized successfully');
   } catch (error) {
@@ -239,7 +239,7 @@ io.on('connection', (socket) => {
           let response;
           
           // Temporarily disable Perplexity to test TTS flow with fallback responses
-          if (false && perplexityService) {
+          if (perplexityService) {
             // Use Perplexity if available
             if (mode === 'greeting') {
               // Handle greetings with basic mode for concise responses
