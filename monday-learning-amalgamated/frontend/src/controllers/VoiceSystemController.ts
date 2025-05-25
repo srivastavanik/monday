@@ -121,9 +121,6 @@ class VoiceSystemController {
       speed: 1.1,
       ...ttsConfig
     }
-    
-    // Global watchdog for stuck states
-    this.startWatchdog()
   }
 
   // ============ STATE MANAGEMENT ============
@@ -460,53 +457,23 @@ class VoiceSystemController {
   // ============ STATE TRANSITION QUEUE ============
   
   private async transitionTo(newState: SystemState, action: () => Promise<void>): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this.stateTransitionQueue.push(async () => {
-        try {
-          console.log(`VoiceController: 🔄 Transitioning ${this.state} → ${newState}`)
-          const oldState = this.state
-          this.state = SystemState.RESETTING
-          this.onStateChange?.(this.state)
-          
-          await action()
-          
-          this.state = newState
-          this.updateLastTransition()
-          this.onStateChange?.(this.state)
-          
-          console.log(`VoiceController: ✅ Transition complete: ${oldState} → ${newState}`)
-          resolve()
-        } catch (e) {
-          console.error(`VoiceController: ❌ Transition failed: ${this.state} → ${newState}:`, e)
-          this.state = SystemState.ERROR
-          this.systemStatus.lastError = `Transition failed: ${e}`
-          this.systemStatus.errorCount++
-          this.onStateChange?.(this.state)
-          this.onError?.(this.systemStatus.lastError)
-          reject(e)
-        }
-      })
-      
-      this.processTransitionQueue()
-    })
-  }
-  
-  private async processTransitionQueue(): Promise<void> {
-    if (this.transitionInProgress || this.stateTransitionQueue.length === 0) {
-      return
-    }
-    
-    this.transitionInProgress = true
-    const transition = this.stateTransitionQueue.shift()!
-    
     try {
-      await transition()
-    } finally {
-      this.transitionInProgress = false
-      // Process next in queue
-      if (this.stateTransitionQueue.length > 0) {
-        setTimeout(() => this.processTransitionQueue(), 10)
-      }
+      console.log(`VoiceController: 🔄 Transitioning ${this.state} → ${newState}`)
+      const oldState = this.state
+      this.state = newState
+      this.onStateChange?.(this.state)
+      
+      await action()
+      
+      console.log(`VoiceController: ✅ Transition complete: ${oldState} → ${newState}`)
+    } catch (e) {
+      console.error(`VoiceController: ❌ Transition failed: ${this.state} → ${newState}:`, e)
+      this.state = SystemState.ERROR
+      this.systemStatus.lastError = `Transition failed: ${e}`
+      this.systemStatus.errorCount++
+      this.onStateChange?.(this.state)
+      this.onError?.(this.systemStatus.lastError)
+      throw e
     }
   }
 
@@ -547,42 +514,98 @@ class VoiceSystemController {
       this.onConversationChange?.(true)
     }
     
-    await this.transitionTo(SystemState.PLAYING_TTS, async () => {
-      await this.playTTSWithGuaranteedCompletion(text)
-    })
-    
-    // Transition to active listening after TTS
-    await this.transitionTo(SystemState.ACTIVE_LISTENING, async () => {
-      // Extra delay to ensure audio device is released
-      await new Promise(resolve => setTimeout(resolve, 300))
+    try {
+      // Play TTS and wait for it to complete
+      await this.transitionTo(SystemState.PLAYING_TTS, async () => {
+        await this.playTTSWithGuaranteedCompletion(text)
+      })
       
-      // Try up to 3 times to restart recognition
-      let attempts = 0
-      let success = false
+      // Add a small delay after TTS completes
+      await new Promise(resolve => setTimeout(resolve, 500))
       
-      while (attempts < 3 && !success) {
-        success = await this.ensureRecognitionActive()
-        if (!success) {
-          attempts++
-          console.warn(`VoiceController: ⚠️ Recognition restart attempt ${attempts} failed`)
-          await new Promise(resolve => setTimeout(resolve, 500 * attempts))
+      // Transition to active listening
+      await this.transitionTo(SystemState.ACTIVE_LISTENING, async () => {
+        // Stop any existing recognition
+        if (this.recognition) {
+          const fixes = this.getBrowserSpecificFixes()
+          fixes.abortMethod(this.recognition)
+          this.recognition = null
+          this.systemStatus.recognitionActive = false
         }
-      }
-      
-      if (!success) {
-        throw new Error('Failed to restart recognition after 3 attempts')
-      }
-    })
+        
+        // Create new recognition instance
+        const SpeechRecognition = window.webkitSpeechRecognition || (window as any).SpeechRecognition
+        if (!SpeechRecognition) {
+          throw new Error('Speech recognition not supported')
+        }
+        
+        this.recognition = new SpeechRecognition()
+        if (!this.recognition) {
+          throw new Error('Failed to create speech recognition instance')
+        }
+        
+        this.recognition.continuous = true
+        this.recognition.interimResults = true
+        this.recognition.lang = 'en-US'
+        
+        // Set up event handlers
+        this.recognition.onstart = () => {
+          console.log('VoiceController: ✅ Recognition started successfully')
+          this.systemStatus.recognitionActive = true
+        }
+        
+        this.recognition.onresult = (event: SpeechRecognitionEvent) => {
+          const result = event.results[event.results.length - 1]
+          if (result.isFinal) {
+            this.currentTranscript = result[0].transcript
+            console.log('VoiceController: 🎤 Final transcript:', this.currentTranscript)
+            this.onTranscriptChange?.(this.currentTranscript)
+          }
+        }
+        
+        this.recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
+          console.error('VoiceController: ❌ Recognition error:', event.error)
+          this.onError?.(`Recognition error: ${event.error}`)
+        }
+        
+        this.recognition.onend = () => {
+          console.log('VoiceController: 🛑 Recognition ended')
+          this.systemStatus.recognitionActive = false
+          
+          // Restart recognition if we're still supposed to be listening
+          if (this.state === SystemState.ACTIVE_LISTENING && this.recognition) {
+            setTimeout(() => {
+              if (this.recognition) {
+                this.recognition.start()
+              }
+            }, 100)
+          }
+        }
+        
+        // Start recognition
+        try {
+          this.recognition.start()
+        } catch (error) {
+          console.error('VoiceController: ❌ Failed to start recognition:', error)
+          throw new Error('Failed to start recognition')
+        }
+      })
+    } catch (error) {
+      console.error('VoiceController: ❌ Error in handleTTSResponse:', error)
+      // Don't throw the error, just log it and continue
+    }
+
+    // Ensure conversation stays active after TTS
+    if (!this.conversationActive) {
+      this.conversationActive = true
+      this.onConversationChange?.(true)
+    }
   }
 
   // ============ EMERGENCY RECOVERY ============
   
   public async emergencyReset(): Promise<void> {
     console.log('VoiceController: 🚨 EMERGENCY RECOVERY INITIATED')
-    
-    // Clear transition queue
-    this.stateTransitionQueue = []
-    this.transitionInProgress = false
     
     // Kill everything
     if (this.recognition) {
@@ -641,6 +664,18 @@ class VoiceSystemController {
     this.onConversationChange?.(false)
     
     console.log('VoiceController: ✅ Emergency recovery completed')
+
+    // Automatically transition back to WAITING_FOR_ACTIVATION
+    try {
+      await this.transitionTo(SystemState.WAITING_FOR_ACTIVATION, async () => {
+        const success = await this.ensureRecognitionActive()
+        if (!success) {
+          throw new Error('Failed to activate recognition')
+        }
+      })
+    } catch (e) {
+      console.error('VoiceController: ❌ Failed to restart recognition after recovery:', e)
+    }
   }
 
   // ============ DIAGNOSTICS ============

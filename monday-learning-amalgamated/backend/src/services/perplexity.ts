@@ -47,30 +47,77 @@ export interface Source {
   publishedDate?: string
 }
 
+interface QueryContext {
+  service?: string;
+  isMondayActivation?: boolean;
+  isInActiveConversation?: boolean;
+  sessionInConversation?: boolean;
+}
+
 class PerplexityService {
   private apiKey: string
   private baseUrl = 'https://api.perplexity.ai'
+  private conversationHistory: string[] = []
+  private systemPrompt = `You are Monday, an advanced AI learning companion for VR education, powered by Perplexity Sonar.
+
+Core Identity:
+- Intelligent, curious, and passionate about learning
+- Speak conversationally and encouragingly 
+- Keep responses clear and TTS-friendly (avoid excessive symbols)
+- Show genuine interest in helping users learn
+
+Your Role:
+- Guide users through immersive learning experiences
+- Provide clear, educational responses with context
+- Encourage deeper exploration of topics
+- Mention when topics might benefit from reasoning or research modes
+
+Response Guidelines:
+- Keep responses conversational (2-4 sentences for basic queries)
+- Use natural speech patterns suitable for voice synthesis
+- Always end with engagement (questions, suggestions, or offers to explore more)
+- Keep responses concise and complete - avoid getting cut off`
   
   constructor() {
     this.apiKey = process.env.PERPLEXITY_API_KEY || ''
     if (!this.apiKey) {
-      throw new Error('PERPLEXITY_API_KEY environment variable is required')
+      throw new Error('PERPLEXITY_API_KEY environment variable is not set')
     }
+    console.log('[DEBUG] API Key length:', this.apiKey.length)
+    console.log('[DEBUG] API Key first 10 chars:', this.apiKey.substring(0, 10))
   }
 
   private async makeRequest(endpoint: string, data: any): Promise<any> {
     const startTime = Date.now()
     
     try {
-      const response = await axios.post(`${this.baseUrl}${endpoint}`, data, {
+      // Log the request details for debugging
+      console.log('[DEBUG] Making request to Perplexity API:', {
+        url: `${this.baseUrl}${endpoint}`,
+        apiKey: this.apiKey.substring(0, 10) + '...',
+        data: JSON.stringify(data, null, 2)
+      })
+
+      const response = await axios({
+        method: 'post',
+        url: `${this.baseUrl}${endpoint}`,
+        data: data,
         headers: {
-          'Authorization': `Bearer ${this.apiKey}`,
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.apiKey.trim()}`,
+          'Accept': 'application/json'
         },
-        timeout: 30000 // 30 second timeout
+        timeout: 30000
       })
       
       const responseTime = Date.now() - startTime
+      
+      // Log the complete response for debugging
+      console.log('[DEBUG] Perplexity API response:', {
+        status: response.status,
+        data: JSON.stringify(response.data, null, 2)
+      })
+      
       logger.info('Perplexity API request completed', {
         endpoint,
         responseTime: `${responseTime}ms`,
@@ -91,67 +138,69 @@ class PerplexityService {
     }
   }
 
-  async basicQuery(query: string, context?: string[]): Promise<PerplexityResponse> {
-    const messages = [
-      {
-        role: 'system',
-        content: `You are Monday, an advanced AI learning companion for VR education, powered by Perplexity Sonar.
+  private async basicQuery(query: string, context: QueryContext): Promise<PerplexityResponse> {
+    try {
+      // Format conversation history with alternating roles
+      const formattedHistory = this.conversationHistory.map((msg, index) => ({
+        role: index % 2 === 0 ? 'user' : 'assistant',
+        content: msg
+      }))
 
-Core Identity:
-- Intelligent, curious, and passionate about learning
-- Speak conversationally and encouragingly 
-- Keep responses clear and TTS-friendly (avoid excessive symbols)
-- Show genuine interest in helping users learn
+      // Add current query
+      const messages = [
+        {
+          role: 'system',
+          content: this.systemPrompt
+        },
+        ...formattedHistory,
+        {
+          role: 'user',
+          content: query
+        }
+      ]
 
-Your Role:
-- Guide users through immersive learning experiences
-- Provide clear, educational responses with context
-- Encourage deeper exploration of topics
-- Mention when topics might benefit from reasoning or research modes
-
-Response Guidelines:
-- Keep responses conversational (2-4 sentences for basic queries)
-- Use natural speech patterns suitable for voice synthesis
-- Always end with engagement (questions, suggestions, or offers to explore more)`
-      }
-    ]
-
-    // Add context messages if provided
-    if (context && context.length > 0) {
-      context.forEach(ctx => {
-        messages.push({
-          role: 'assistant',
-          content: ctx
-        })
+      console.log('[DEBUG] Making request to Perplexity API:', {
+        url: this.baseUrl,
+        apiKey: this.apiKey.substring(0, 10) + '...',
+        data: JSON.stringify({
+          model: 'sonar-pro',
+          messages,
+          max_tokens: 150,
+          temperature: 0.3
+        }, null, 2)
       })
-    }
 
-    // Add the user query
-    messages.push({
-      role: 'user',
-      content: query
-    })
+      const response = await this.makeRequest('/chat/completions', {
+        model: 'sonar-pro',
+        messages,
+        max_tokens: 150,
+        temperature: 0.3
+      })
 
-    const requestData = {
-      model: 'sonar-pro',
-      messages: messages,
-      max_tokens: 300,
-      temperature: 0.3
-      // Removed search_domain_filter as it was causing errors with invalid domain names
-      // The API works best with default search settings according to documentation
-    }
-
-    const result = await this.makeRequest('/chat/completions', requestData)
-    
-    return {
-      id: result.id || 'basic_query',
-      model: result.model || 'sonar-pro',
-      content: result.choices?.[0]?.message?.content || 'No response generated',
-      citations: this.extractCitations(result),
-      metadata: {
-        tokensUsed: result.usage?.total_tokens || 0,
-        responseTime: 0 // Will be filled by caller
+      if (!response.choices?.[0]?.message?.content) {
+        throw new Error('No response content in Perplexity API response')
       }
+
+      const content = response.choices[0].message.content.trim()
+      console.log('[DEBUG] Final Perplexity response content:', content)
+      
+      // Add both query and response to history
+      this.conversationHistory.push(query)
+      this.conversationHistory.push(content)
+      
+      return {
+        id: response.id || 'basic_query',
+        model: response.model || 'sonar-pro',
+        content: content,
+        citations: this.extractCitations(response),
+        metadata: {
+          tokensUsed: response.usage?.total_tokens || 0,
+          responseTime: 0
+        }
+      }
+    } catch (error) {
+      console.error('[DEBUG] Failed to process Perplexity query:', error)
+      throw error
     }
   }
 
@@ -345,38 +394,19 @@ Voice-Friendly Delivery:
   }
 
   async processQuery(queryData: PerplexityQuery): Promise<PerplexityResponse> {
-    const startTime = Date.now()
-    
-    let response: PerplexityResponse
-    
-    switch (queryData.mode) {
-      case 'basic':
-        response = await this.basicQuery(queryData.query, queryData.context)
-        break
-      case 'reasoning':
-        response = await this.reasoningQuery(queryData.query, queryData.context)
-        break
-      case 'research':
-        response = await this.deepResearch(queryData.query)
-        break
-      default:
-        throw new Error(`Unsupported query mode: ${queryData.mode}`)
+    try {
+      const queryContext: QueryContext = {
+        service: 'monday-backend',
+        isMondayActivation: queryData.query.toLowerCase().includes('hey monday'),
+        isInActiveConversation: queryData.context && queryData.context.length > 0,
+        sessionInConversation: queryData.context && queryData.context.length > 0
+      }
+      
+      return await this.basicQuery(queryData.query, queryContext)
+    } catch (error) {
+      console.error('[DEBUG] Failed to process Perplexity query:', error)
+      throw error
     }
-    
-    // Add response time to metadata
-    response.metadata.responseTime = Date.now() - startTime
-    
-    // Log the query for analytics
-    logger.info('Perplexity query processed', {
-      mode: queryData.mode,
-      query: queryData.query.substring(0, 100) + '...',
-      responseTime: response.metadata.responseTime,
-      tokensUsed: response.metadata.tokensUsed,
-      citationCount: response.citations?.length || 0,
-      sessionId: queryData.sessionId
-    })
-    
-    return response
   }
 }
 

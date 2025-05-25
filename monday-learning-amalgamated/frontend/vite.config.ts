@@ -36,12 +36,6 @@ export default defineConfig({
   server: {
     host: '0.0.0.0',
     port: 3000,
-    https: {
-      // Self-signed certificate for local development
-      // Quest requires HTTPS for WebXR and microphone access
-      key: './certs/key.pem',
-      cert: './certs/cert.pem'
-    },
     proxy: {
       '/api': {
         target: 'http://localhost:3001',

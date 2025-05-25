@@ -12,6 +12,8 @@ import path from 'path';
 dotenv.config({ path: path.resolve(process.cwd(), '../.env') });
 console.log('[BACKEND LOG] Environment loaded, PORT:', process.env.PORT);
 console.log('[BACKEND LOG] PERPLEXITY_API_KEY exists:', !!process.env.PERPLEXITY_API_KEY);
+console.log('[BACKEND LOG] Current working directory:', process.cwd());
+console.log('[BACKEND LOG] Attempting to load .env from:', path.resolve(process.cwd(), '../.env'));
 
 // Import services dynamically to handle errors gracefully
 let perplexityService: any = null;
@@ -47,7 +49,11 @@ const app = express();
 const server = createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: process.env.FRONTEND_URL || "http://localhost:3000",
+    origin: [
+      process.env.FRONTEND_URL || "http://localhost:3000",
+      "https://localhost:3000",
+      "http://localhost:3000"
+    ],
     methods: ["GET", "POST"],
     credentials: true
   },
@@ -96,7 +102,11 @@ Remember: You are not just answering questions - you are guiding an immersive le
 
 // Basic middleware
 app.use(cors({
-  origin: process.env.FRONTEND_URL || "http://localhost:3000",
+  origin: [
+    process.env.FRONTEND_URL || "http://localhost:3000",
+    "https://localhost:3000",
+    "http://localhost:3000"
+  ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
@@ -238,11 +248,10 @@ io.on('connection', (socket) => {
         try {
           let response;
           
-          // Temporarily disable Perplexity to test TTS flow with fallback responses
-          if (false && perplexityService) {
-            // Use Perplexity if available
+          // Use Perplexity if available
+          if (perplexityService) {
+            // Handle greetings with basic mode for concise responses
             if (mode === 'greeting') {
-              // Handle greetings with basic mode for concise responses
               response = await perplexityService.processQuery({
                 query: responseQuery,
                 mode: 'basic',

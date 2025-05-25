@@ -111,7 +111,6 @@ const InformationPanel: React.FC<InformationPanelProps> = ({
         color={colors.text}
         anchorX="center"
         anchorY="middle"
-        font="/fonts/FK-Display-Medium.woff"
         maxWidth={dimensions.width - 0.2}
       >
         {panel.title}
@@ -125,7 +124,6 @@ const InformationPanel: React.FC<InformationPanelProps> = ({
         color={colors.text}
         anchorX="center"
         anchorY="middle"
-        font="/fonts/FK-Grotesk-Neue-Regular.woff"
         maxWidth={dimensions.width - 0.2}
         lineHeight={1.2}
       >

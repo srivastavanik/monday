@@ -18,7 +18,11 @@ export const useWebSocketConnection = (): UseWebSocketReturn => {
   const connect = () => {
     if (socket?.connected) return
 
-    const newSocket = io('ws://localhost:3001', {
+    // Force ws:// for local development
+    const wsUrl = 'ws://localhost:3001'
+    console.log('WebSocket: Attempting connection to', wsUrl)
+
+    const newSocket = io(wsUrl, {
       transports: ['websocket'],
       autoConnect: true,
       reconnection: true,
@@ -27,18 +31,18 @@ export const useWebSocketConnection = (): UseWebSocketReturn => {
     })
 
     newSocket.on('connect', () => {
-      console.log('WebSocket connected')
+      console.log('WebSocket: ✅ Connected successfully')
       setIsConnected(true)
       setError(null)
     })
 
-    newSocket.on('disconnect', () => {
-      console.log('WebSocket disconnected')
+    newSocket.on('disconnect', (reason) => {
+      console.log('WebSocket: ❌ Disconnected:', reason)
       setIsConnected(false)
     })
 
     newSocket.on('connect_error', (err) => {
-      console.error('WebSocket connection error:', err)
+      console.error('WebSocket: ❌ Connection error:', err)
       setError('Connection failed')
       setIsConnected(false)
     })

@@ -25,7 +25,8 @@ const App: React.FC = () => {
     initializeSession,
     setPerformanceMetrics,
     addPanel,
-    setActivePanel
+    setActivePanel,
+    setConversationActive
   } = useMondayStore()
 
   // Initialize WebXR and check support
@@ -197,6 +198,11 @@ const App: React.FC = () => {
     })
 
     if (shouldProcess) {
+      // If it's an explicit trigger, set conversation active
+      if (isExplicitTrigger) {
+        setConversationActive(true)
+      }
+
       console.log('🌟 App: 🎯 Processing voice command:', {
         command: transcript,
         isExplicitTrigger,
@@ -210,7 +216,7 @@ const App: React.FC = () => {
         socket.emit('voice_command', {
           command: transcript,
           timestamp: Date.now(),
-          conversationActive: conversationActive,
+          conversationActive: true, // Always send true if we're processing
           isExplicitTrigger: isExplicitTrigger
         })
         

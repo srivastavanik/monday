@@ -79,6 +79,7 @@ export interface MondayState {
   currentTranscript: string
   lastCommand: string | null
   mondayResponse: string | null
+  conversationActive: boolean
   
   // Performance monitoring
   performanceMetrics: PerformanceMetrics
@@ -116,6 +117,7 @@ export interface MondayState {
   setSpatialLayout: (layout: 'default' | 'focus' | 'research') => void
   updateLearningMomentum: (change: number) => void
   addToKnowledgeConstellation: (topic: string, understanding: number) => void
+  setConversationActive: (active: boolean) => void
 }
 
 export const useMondayStore = create<MondayState>()(
@@ -145,6 +147,7 @@ export const useMondayStore = create<MondayState>()(
       currentTranscript: '',
       lastCommand: null,
       mondayResponse: null,
+      conversationActive: false,
       
       performanceMetrics: {
         fps: 60,
@@ -162,6 +165,8 @@ export const useMondayStore = create<MondayState>()(
       setConnected: (connected) => set({ isConnected: connected }),
       
       setSocket: (socket) => set({ socket }),
+      
+      setConversationActive: (active) => set({ conversationActive: active }),
       
       initializeSession: (config) => set((state) => ({
         sessionState: {
