@@ -128,7 +128,7 @@ io.use((socket, next) => {
 function detectQueryMode(command: string): 'greeting' | 'basic' | 'reasoning' | 'research' {
   const lowerCommand = command.toLowerCase();
   
-  if (lowerCommand.includes('hello') || lowerCommand.includes('hi') || lowerCommand.includes('hey')) {
+  if (lowerCommand.includes('hello') || lowerCommand.includes('hi') || lowerCommand.includes('hey monday')) {
     return 'greeting';
   }
   
@@ -174,8 +174,13 @@ io.on('connection', (socket) => {
   // Voice command handler with Perplexity integration
   socket.on('voice_command', async (data) => {
     try {
-      const { command } = data;
-      logger.info(`Voice command received: "${command}" from ${socket.id}`);
+      const { command, conversationActive: frontendConversationActive, isExplicitTrigger: frontendIsExplicitTrigger } = data;
+      logger.info(`Voice command received from ${socket.id}:`, {
+        command: command.substring(0, 50),
+        frontendConversationActive,
+        frontendIsExplicitTrigger,
+        timestamp: data.timestamp
+      });
       
       // Parse the command
       const commandLower = command.toLowerCase().trim();
@@ -184,34 +189,46 @@ io.on('connection', (socket) => {
         lastActivity: Date.now() 
       };
       
-      // Check if this is a Monday activation or continuation
-      const isMondayActivation = commandLower.includes('monday');
-      const isInActiveConversation = sessionState.isInConversation && 
-        (Date.now() - sessionState.lastActivity < 300000); // 5 minute timeout
+      // Enhanced activation logic using frontend state
+      const isMondayActivation = frontendIsExplicitTrigger || commandLower.includes('hey monday');
+      const isInActiveConversation = frontendConversationActive || (
+        sessionState.isInConversation && 
+        (Date.now() - sessionState.lastActivity < 300000) // 5 minute timeout
+      );
       
+      // Process command if it's an explicit trigger OR we're in conversation mode
       if (isMondayActivation || isInActiveConversation) {
+        logger.info(`Processing command for ${socket.id}:`, {
+          isMondayActivation,
+          isInActiveConversation,
+          sessionInConversation: sessionState.isInConversation
+        });
+        
         // Determine the appropriate response mode and query
         let responseQuery = ''
         let mode: 'greeting' | 'basic' | 'reasoning' | 'research' = 'basic'
         
         if (commandLower.includes('think') || commandLower.includes('reason')) {
           mode = 'reasoning'
-          responseQuery = `The user wants you to reason through: ${command}. Use step-by-step thinking.`
+          responseQuery = command.replace(/^(hey monday,?\s*)/i, '').trim();
         } else if (commandLower.includes('research') || commandLower.includes('investigate')) {
           mode = 'research' 
-          responseQuery = `The user wants comprehensive research on: ${command}`
-        } else if (commandLower.includes('hello') || commandLower.includes('hi')) {
+          responseQuery = command.replace(/^(hey monday,?\s*)/i, '').trim();
+        } else if (isMondayActivation && (commandLower.includes('hello') || commandLower.includes('hi') || 
+                   command.trim().toLowerCase() === 'hey monday' || 
+                   commandLower.match(/^hey monday[,.]?\s*$/))) {
           mode = 'greeting'
-          responseQuery = `The user just said hello. Greet them warmly as Monday, introduce yourself as their AI learning companion powered by Perplexity Sonar, and ask what they'd like to learn about today. Keep it conversational and TTS-friendly.`
-        } else if (commandLower === 'monday' || commandLower.includes('monday') && command.split(' ').length <= 2) {
-          mode = 'greeting'
-          responseQuery = `The user said 'Monday' but didn't ask anything specific. Politely ask what they'd like to learn about. Briefly remind them you're Monday, their AI learning companion powered by Perplexity Sonar.`
+          responseQuery = `Greet the user warmly as Monday, their AI learning companion powered by Perplexity Sonar. Keep it conversational and ask what they'd like to explore today.`
         } else {
           mode = 'basic'
-          responseQuery = command
+          // Remove "Hey Monday" prefix if present for cleaner processing
+          responseQuery = command.replace(/^(hey monday,?\s*)/i, '').trim();
+          if (!responseQuery) {
+            responseQuery = "The user activated Monday but didn't ask a specific question. Ask what they'd like to explore.";
+          }
         }
         
-        // Update session state
+        // Update session state - always set to conversation mode after any interaction
         sessionStates.set(socket.id, {
           isInConversation: true,
           lastActivity: Date.now(),
@@ -223,29 +240,31 @@ io.on('connection', (socket) => {
           
           if (perplexityService) {
             // Use Perplexity if available
-            if (mode === 'greeting' && responseQuery.length < 10) {
+            if (mode === 'greeting') {
+              // Handle greetings with basic mode for concise responses
               response = await perplexityService.processQuery({
                 query: responseQuery,
                 mode: 'basic',
-                context: getConversationContext(socket.id).slice(-4),
+                context: [],
                 sessionId: socket.id
               });
             } else if (responseQuery.length > 0) {
-              // Process actual learning queries
-              const fullQuery = getConversationContext(socket.id).length > 0 
-                ? `Previous conversation context: ${getConversationContext(socket.id).slice(-4).join(' ')}\n\nCurrent user question: ${responseQuery}`
+              // Process actual learning queries with conversation context
+              const contextEntries = getConversationContext(socket.id);
+              const fullQuery = contextEntries.length > 0 
+                ? `Previous conversation: ${contextEntries.slice(-4).join(' ')}\n\nCurrent question: ${responseQuery}`
                 : responseQuery;
               
               response = await perplexityService.processQuery({
                 query: fullQuery,
-                mode: mode === 'basic' ? 'basic' : mode === 'reasoning' ? 'reasoning' : 'research',
-                context: getConversationContext(socket.id).slice(-6),
+                mode: mode === 'reasoning' ? 'reasoning' : mode === 'research' ? 'research' : 'basic',
+                context: contextEntries.slice(-6),
                 sessionId: socket.id
               });
             } else {
               // Empty query - ask for clarification
               response = await perplexityService.processQuery({
-                query: responseQuery,
+                query: "The user activated Monday but didn't ask a specific question. Politely ask what they'd like to learn about today.",
                 mode: 'basic',
                 context: getConversationContext(socket.id).slice(-2),
                 sessionId: socket.id
@@ -254,7 +273,7 @@ io.on('connection', (socket) => {
           } else {
             // Fallback responses if Perplexity isn't available
             const fallbackResponses = {
-              greeting: "Hello! I'm Monday, your AI learning companion. I'd love to help you explore any topic you're curious about. What would you like to learn today?",
+              greeting: "Hey there! I'm Monday, your AI learning companion. What would you like to explore today?",
               basic: "That's a fascinating topic! While I'm working on accessing my full knowledge base, I'm still here to help guide your learning journey. What specifically interests you about this?",
               reasoning: "I'd love to think through that with you step by step! Could you tell me more about what aspect you'd like me to analyze?",
               research: "That sounds like a great topic for deep research! What particular angle or question would you like me to focus on?"
@@ -290,17 +309,18 @@ io.on('connection', (socket) => {
               timestamp: new Date().toISOString(),
               metadata: response.metadata,
               panels: panelData,
-              conversationActive: true
+              conversationActive: true // Always set to true after any interaction
             }
           };
           
           socket.emit('voice_response', responseData);
-          logger.info(`Monday response sent to ${socket.id}`, {
+          logger.info(`Monday response sent to ${socket.id}:`, {
             mode,
             responseLength: response.content.length,
             citationCount: response.citations?.length || 0,
-            tokensUsed: response.metadata.tokensUsed,
-            panelCount: panelData.length
+            tokensUsed: response.metadata?.tokensUsed || 0,
+            panelCount: panelData.length,
+            conversationActivated: true
           });
           
         } catch (error: any) {
@@ -323,7 +343,23 @@ io.on('connection', (socket) => {
         
       } else {
         // Command doesn't include "Monday" and no active conversation
-        logger.info(`Ignoring command without Monday activation: "${command}"`);
+        logger.info(`Ignoring command without Monday activation from ${socket.id}:`, {
+          command: command.substring(0, 50),
+          reason: 'No activation trigger and not in conversation'
+        });
+        
+        // Optionally send a subtle hint to the user
+        socket.emit('voice_response', {
+          type: 'info',
+          message: '',  // Empty message so no TTS plays
+          action: 'show_hint',
+          data: {
+            title: 'Monday - Listening',
+            content: 'Say "Hey Monday" to start a conversation or ask a question.',
+            conversationActive: false,
+            timestamp: new Date().toISOString()
+          }
+        });
       }
       
     } catch (error) {
@@ -465,4 +501,4 @@ function createSpatialPanels(response: any, mode: string, query: string): any[] 
   }
   
   return panels;
-} 
+}

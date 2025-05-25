@@ -5,6 +5,9 @@ interface VoiceInterfaceProps {
   onStopListening: () => void
   conversationActive?: boolean
   onUserInteraction?: () => void
+  isRestartingVoice?: boolean
+  isSpeaking?: boolean
+  isPlaying?: boolean
 }
 
 const VoiceInterface = ({ 
@@ -13,17 +16,47 @@ const VoiceInterface = ({
   onStartListening, 
   onStopListening,
   conversationActive = false,
-  onUserInteraction
+  onUserInteraction,
+  isRestartingVoice = false,
+  isSpeaking = false,
+  isPlaying = false
 }: VoiceInterfaceProps) => {
 
+  // Smart button logic - prevent conflicts
+  const canManuallyStart = !isListening && !isRestartingVoice && !isSpeaking && !isPlaying
+  const shouldShowStartButton = canManuallyStart && conversationActive
+  
   const handleStartListening = () => {
-    onUserInteraction?.() // Initialize audio context
+    // Double-check conditions before attempting start
+    if (!canManuallyStart) {
+      console.log('🚫 Manual start blocked - system busy')
+      return
+    }
+    
+    onUserInteraction?.()
     onStartListening()
   }
 
   const handleStopListening = () => {
-    onUserInteraction?.() // Initialize audio context  
+    onUserInteraction?.()
     onStopListening()
+  }
+
+  // Status message logic
+  const getStatusMessage = () => {
+    if (isSpeaking || isPlaying) {
+      return 'Monday is speaking...'
+    }
+    if (isRestartingVoice) {
+      return 'Restarting voice recognition...'
+    }
+    if (isListening) {
+      return conversationActive ? 'Listening...' : 'Listening for "Hey Monday..."'
+    }
+    if (conversationActive) {
+      return 'In conversation - voice ready'
+    }
+    return 'Voice recognition ready'
   }
 
   return (
@@ -47,10 +80,7 @@ const VoiceInterface = ({
         marginBottom: '0.5rem',
         opacity: 0.8
       }}>
-        {isListening 
-          ? (conversationActive ? 'Listening...' : 'Listening for "Monday..."')
-          : (conversationActive ? 'In conversation - voice ready' : 'Voice recognition ready')
-        }
+        {getStatusMessage()}
       </div>
       
       {transcript && (
@@ -79,7 +109,7 @@ const VoiceInterface = ({
         gap: '1rem',
         marginTop: '0.5rem'
       }}>
-        {!isListening ? (
+        {shouldShowStartButton ? (
           <button
             className="btn"
             onClick={handleStartListening}
@@ -90,7 +120,7 @@ const VoiceInterface = ({
           >
             Start Listening
           </button>
-        ) : (
+        ) : isListening ? (
           <button
             className="btn"
             onClick={handleStopListening}
@@ -103,6 +133,17 @@ const VoiceInterface = ({
           >
             Stop
           </button>
+        ) : (
+          <div style={{
+            fontSize: '0.875rem',
+            padding: '0.5rem 1rem',
+            opacity: 0.7,
+            fontStyle: 'italic'
+          }}>
+            {isRestartingVoice ? 'Restarting...' : 
+             isSpeaking || isPlaying ? 'Speaking...' : 
+             'Voice Ready'}
+          </div>
         )}
       </div>
       

@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react'
+import React, { useEffect, useState, useCallback, useRef } from 'react'
 import { Canvas } from '@react-three/fiber'
 import { XR, Controllers, Hands } from '@react-three/xr'
 import MondayScene from './components/MondayScene'
@@ -18,6 +18,11 @@ const App: React.FC = () => {
   const [lastProcessedTranscript, setLastProcessedTranscript] = useState('')
   const [conversationActive, setConversationActive] = useState(false)
   const [ttsStatus, setTtsStatus] = useState<'ready' | 'speaking' | 'failed' | 'no-audio'>('ready')
+  const [isRestartingVoice, setIsRestartingVoice] = useState(false)
+  
+  // This ref will hold the LATEST isListening state from the hook IMMEDIATELY
+  const voiceListeningStateRef = useRef(false);
+
   const { 
     isConnected, 
     sessionState, 
@@ -52,15 +57,25 @@ const App: React.FC = () => {
   // Initialize WebSocket connection
   const { socket, isConnected: socketConnected } = useWebSocketConnection()
 
-  // Initialize voice recognition
+  // Callback for the hook to update App.tsx's understanding of isListening
+  const handleListeningStateChange = useCallback((listening: boolean) => {
+    console.log(`📢 App.tsx: handleListeningStateChange CALLED. New listening state: ${listening}`);
+    voiceListeningStateRef.current = listening;
+    // Optionally, if you still need a React state for isListening in App.tsx for other UI reasons,
+    // you could set it here, but be mindful of potential re-renders.
+    // For now, we'll primarily use the ref for immediate checks.
+  }, []);
+
+  // Initialize voice recognition with the callback
   const {
-    isListening,
+    isListening, // This is the state from the hook, might have slight delay
     transcript,
     startListening,
     stopListening,
     error: voiceError,
-    resetTranscript
-  } = useVoiceRecognition()
+    resetTranscript,
+    clearError
+  } = useVoiceRecognition({ onListeningStateChange: handleListeningStateChange });
 
   // Initialize text-to-speech
   const { 
@@ -92,14 +107,10 @@ const App: React.FC = () => {
         console.warn('Audio initialization failed:', error)
       }
     } else {
-      // Already initialized
       return true
     }
     return false
   }, [initializeAudio, audioInitialized])
-
-  // Performance monitoring for Quest optimization
-  const { fps, frameTime, memoryUsage } = usePerformanceMonitor()
 
   // Process voice commands and send to backend
   const processVoiceCommand = useCallback(async (command: string) => {
@@ -107,40 +118,64 @@ const App: React.FC = () => {
 
     const normalizedCommand = command.toLowerCase().trim()
     
-    // Send command if it contains "Monday" or if we're in an active conversation
-    if (normalizedCommand.includes('monday') || conversationActive) {
-      console.log('Processing voice command:', command)
-      
-      // Stop any currently playing TTS
-      stopTTS()
-      
-      // Voice recognition counts as user gesture - try to initialize audio
-      try {
-        const audioReady = await handleUserInteraction()
-        console.log('Audio ready for response:', audioReady)
-      } catch (error) {
-        console.warn('Audio initialization failed during voice command:', error)
-      }
-      
-      // Send command to backend
-      socket.emit('voice_command', {
+    // Check if this should trigger Monday (either explicit trigger or in conversation)
+    const isExplicitTrigger = normalizedCommand.includes('hey monday')
+    const shouldProcess = isExplicitTrigger || conversationActive
+    
+    if (shouldProcess) {
+      console.log('📢 App.tsx: 🎯 Processing voice command:', {
         command: command,
-        timestamp: Date.now()
+        isExplicitTrigger,
+        conversationActive,
+        commandLength: command.length
       })
       
-      // Reset transcript after processing
+      if (voiceError) {
+        console.log('📢 App.tsx: Clearing voice error before processing command');
+        clearError()
+      }
+      stopTTS() // Stop any ongoing TTS
+      
+      try {
+        await handleUserInteraction() 
+        console.log('📢 App.tsx: ✅ Audio ready for response');
+      } catch (error) {
+        console.warn('📢 App.tsx: ⚠️ Audio initialization failed during command processing:', error)
+      }
+      
+      console.log('📢 App.tsx: 📤 Sending command to backend via WebSocket');
+      socket.emit('voice_command', {
+        command: command,
+        timestamp: Date.now(),
+        conversationActive: conversationActive,
+        isExplicitTrigger: isExplicitTrigger
+      })
+      
       resetTranscript()
       setLastProcessedTranscript(command)
+      console.log('📢 App.tsx: ✅ Command sent and transcript reset');
+    } else {
+      console.log('📢 App.tsx: ❌ Voice command ignored (not triggered):', {
+        command: normalizedCommand.substring(0, 50),
+        hasHeyMonday: isExplicitTrigger,
+        conversationActive
+      });
     }
-  }, [socket, socketConnected, resetTranscript, stopTTS, conversationActive, handleUserInteraction])
+  }, [socket, socketConnected, resetTranscript, stopTTS, conversationActive, handleUserInteraction, voiceError, clearError])
+
+  // Function to clear TTS errors
+  const clearTTSError = useCallback(() => {
+    console.log('📢 App.tsx: Clearing TTS error via stopTTS()');
+    stopTTS(); // The stop function in useTextToSpeech clears errors
+  }, [stopTTS]);
 
   // Monitor transcript changes and process commands
   useEffect(() => {
-    if (transcript && transcript !== lastProcessedTranscript && transcript.length > 5) {
-      // Add a small delay to ensure the transcript is complete
+    if (transcript && transcript !== lastProcessedTranscript && transcript.length > 3) { // Reduced length for faster response
       const timer = setTimeout(() => {
+        console.log(`📢 App.tsx: Transcript changed to "${transcript}", processing.`);
         processVoiceCommand(transcript)
-      }, 1000)
+      }, 700); // Reduced delay
       
       return () => clearTimeout(timer)
     }
@@ -151,85 +186,261 @@ const App: React.FC = () => {
     if (!socket) return
 
     const handleVoiceResponse = async (response: any) => {
-      console.log('Received voice response:', response)
+      console.log('📢 App.tsx: Received voice response from backend:', response)
       
       if (response.data?.conversationActive !== undefined) {
+        console.log('📢 App.tsx: Setting conversationActive to:', response.data.conversationActive)
         setConversationActive(response.data.conversationActive)
       }
       
-      if (isListening) {
-        stopListening()
-        console.log('Stopped listening - Monday is responding')
+      if (voiceError) {
+        console.log('📢 App.tsx: Clearing voiceError as Monday is responding.')
+        clearError() 
       }
       
-      if (response.data?.panels && response.data.panels.length > 0) {
-        console.log('Creating spatial panels:', response.data.panels);
-        response.data.panels.forEach((panelData: any) => addPanel(panelData));
-        const mainPanel = response.data.panels.find((p: any) => p.isActive);
-        if (mainPanel) setActivePanel(mainPanel.id);
+      // Stop listening using the ref for the most current state check
+      if (voiceListeningStateRef.current) {
+        console.log('📢 App.tsx: Voice is listening (checked via ref). Attempting to stop for TTS...')
+        stopListening() 
+        // The hook's onListeningStateChange will update voiceListeningStateRef.current to false
+        // We might not need to aggressively poll here anymore if the callback is reliable.
+        // For safety, a very short timeout or a useEffect watching the actual hook's isListening state can be used if needed.
+      } else {
+        console.log('📢 App.tsx: Voice was not listening (checked via ref) when TTS response received.')
       }
+      
+      response.data.panels?.forEach((panelData: any) => addPanel(panelData));
+      const mainPanel = response.data.panels?.find((p: any) => p.isActive);
+      if (mainPanel) setActivePanel(mainPanel.id);
       
       let ttsSucceeded = false;
-      setTtsStatus('speaking'); // Set status to speaking BEFORE attempting TTS
+      console.log('📢 App.tsx: Setting TTS status to speaking')
+      setTtsStatus('speaking');
 
       try {
         const audioReady = await handleUserInteraction();
-        console.log('Audio initialization result:', audioReady);
+        console.log('📢 App.tsx: Audio initialized for TTS:', audioReady);
         
-        if (audioReady) {
-          await speak(response.message);
-          console.log('Monday finished speaking (from speak promise)');
-          ttsSucceeded = true;
+        if (audioReady && response.message) {
+          console.log('📢 App.tsx: Preparing to speak. Message content:', JSON.stringify(response.message)); // Log the message content
+          try {
+            await speak(response.message);
+            console.log('📢 App.tsx: TTS speak() promise resolved.');
+            
+            // Check if there was actually a TTS error even though promise resolved
+            if (ttsError) {
+              console.error('📢 App.tsx: TTS hook reported error after speak():', ttsError);
+              ttsSucceeded = false;
+            } else {
+              ttsSucceeded = true;
+            }
+          } catch (speakError) {
+            console.error('📢 App.tsx: TTS speak() promise rejected:', speakError);
+            ttsSucceeded = false;
+          }
           
-          // Wait for isSpeaking and isPlaying to actually become false
+          console.log('📢 App.tsx: Waiting for TTS audio playback to complete (isSpeaking/isPlaying to be false). Current state:', { isSpeaking, isPlaying })
           await new Promise<void>(resolve => {
             const interval = setInterval(() => {
               if (!isSpeaking && !isPlaying) {
                 clearInterval(interval);
+                console.log('📢 App.tsx: Confirmed TTS audio playback completed.')
                 resolve();
               }
-            }, 50); // Check every 50ms
+            }, 50);
+            setTimeout(() => { // Timeout for safety
+                clearInterval(interval);
+                console.warn('📢 App.tsx: TIMEOUT waiting for TTS playback completion.');
+                resolve();
+            }, 7000); // 7s timeout, adjust as needed
           });
-          console.log('isSpeaking & isPlaying are now false');
 
         } else {
-          console.warn('Audio not available, skipping TTS');
+          console.warn('📢 App.tsx: Audio not available or no message for TTS, skipping TTS playback.');
+          if (!response.message) console.warn('📢 App.tsx: No message content in response for TTS.');
+          ttsSucceeded = false; // No audio available = not successful
         }
       } catch (error) {
-        console.error('TTS error during speak:', error);
+        console.error('📢 App.tsx: TTS error during speak() call:', error);
         ttsSucceeded = false;
       } finally {
-        console.log('TTS operation finished. Success:', ttsSucceeded);
-        setTtsStatus(ttsSucceeded ? 'ready' : (audioInitialized ? 'failed' : 'no-audio'));
-        console.log('TTS status set to:', ttsSucceeded ? 'ready' : (audioInitialized ? 'failed' : 'no-audio'));
+        console.log('📢 App.tsx: TTS operation finished. TTS Success Flag:', ttsSucceeded);
+        const newStatus = ttsSucceeded ? 'ready' : (audioInitialized ? (ttsError ? 'failed' : 'no-audio') : 'no-audio');
+        setTtsStatus(newStatus);
+        console.log('📢 App.tsx: TTS status set to:', newStatus);
+        if (ttsError) console.error('📢 App.tsx: TTS hook reported error:', ttsError);
       }
       
-      // Log response data for debugging
-      if (response.data?.metadata) {
-        console.log('Response metadata:', response.data.metadata, 'TTS Actual Success:', ttsSucceeded);
-      }
-    }
-
-    const handleVoiceError = (error: any) => {
-      console.error('Voice command error from backend:', error)
-      
-      // Resume listening after error
-      setTimeout(() => {
-        if (!isListening && !voiceError) {
-          startListening()
-          console.log('Resumed listening after backend error')
-        }
-      }, 1000)
+      // Restart logic is now primarily driven by useEffect watching ttsStatus
     }
 
     socket.on('voice_response', handleVoiceResponse)
-    socket.on('voice_error', handleVoiceError)
+    // ... (socket.on('voice_error', handleVoiceError))
 
     return () => {
       socket.off('voice_response', handleVoiceResponse)
-      socket.off('voice_error', handleVoiceError)
+      // ... (socket.off('voice_error', handleVoiceError))
     }
-  }, [socket, speak, isListening, stopListening, startListening, voiceError, isSpeaking, isPlaying, addPanel, setActivePanel])
+  }, [socket, speak, stopListening, voiceError, clearError, audioInitialized, handleUserInteraction, conversationActive, isSpeaking, isPlaying, ttsError, addPanel, setActivePanel])
+
+  // Single, comprehensive voice restart function - SIMPLIFIED
+  const restartVoiceRecognition = useCallback(async (reason: string) => {
+    console.log(`📢 App.tsx: 🔄 Voice restart requested. Reason: "${reason}". Current state:`, {
+      isListening_hook: isListening,
+      isListening_ref: voiceListeningStateRef.current,
+      audioInitialized,
+      conversationActive,
+      ttsStatus,
+      isRestartingVoice
+    });
+
+    if (!audioInitialized) {
+      console.warn(`📢 App.tsx: Voice restart "${reason}" BLOCKED - audio not initialized. Attempting init...`);
+      const success = await handleUserInteraction();
+      if (!success) {
+        console.error(`📢 App.tsx: Voice restart "${reason}" FAILED - audio could not be initialized.`);
+        return;
+      }
+      console.log(`📢 App.tsx: ✅ Audio initialized during voice restart for "${reason}".`);
+    }
+
+    // Use the ref for the most immediate check
+    if (voiceListeningStateRef.current) {
+        console.warn(`📢 App.tsx: Voice restart "${reason}" SKIPPED - already listening (ref: ${voiceListeningStateRef.current}).`);
+        return;
+    }
+    if (isRestartingVoice) {
+        console.warn(`📢 App.tsx: Voice restart "${reason}" SKIPPED - already restarting.`);
+        return;
+    }
+
+    console.log(`📢 App.tsx: 🚀 Starting voice restart for "${reason}"`);
+    setIsRestartingVoice(true);
+
+    if (voiceError) {
+      console.log(`📢 App.tsx: Clearing voiceError ("${voiceError}") before restart.`);
+      clearError();
+    }
+    
+    // Brief delay for stability
+    await new Promise(resolve => setTimeout(resolve, 100)); 
+
+    console.log(`📢 App.tsx: 📞 Calling startListening() for "${reason}"`);
+    startListening();
+
+    // Enhanced verification that voice recognition actually starts
+    let verificationAttempts = 0;
+    const maxVerificationAttempts = 20; // 2 seconds max
+    
+    const verifyStart = async () => {
+      while (verificationAttempts < maxVerificationAttempts) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        verificationAttempts++;
+        
+        if (voiceListeningStateRef.current) {
+          console.log(`📢 App.tsx: ✅ Voice restart "${reason}" CONFIRMED - listening is active after ${verificationAttempts * 100}ms`);
+          if (conversationActive) {
+            console.log(`📢 App.tsx: 💬 CONVERSATION READY - User can speak without "Hey Monday"`);
+          }
+          break;
+        }
+        
+        if (voiceError) {
+          console.error(`📢 App.tsx: ❌ Voice restart "${reason}" FAILED - error detected: ${voiceError}`);
+          break;
+        }
+      }
+      
+      if (verificationAttempts >= maxVerificationAttempts && !voiceListeningStateRef.current) {
+        console.warn(`📢 App.tsx: ⚠️ Voice restart "${reason}" TIMEOUT - listening not confirmed after 2s`);
+      }
+    };
+    
+    // Start verification process
+    verifyStart();
+
+    // Reset restart flag after delay
+    setTimeout(() => {
+        setIsRestartingVoice(false);
+        console.log(`📢 App.tsx: 🏁 Voice restart process "${reason}" completed. Final listening state: ${voiceListeningStateRef.current}`);
+    }, 2500);
+
+  }, [audioInitialized, handleUserInteraction, voiceError, clearError, startListening, isRestartingVoice, isListening, conversationActive, ttsStatus]);
+
+  // Auto-start voice recognition when session is ready
+  useEffect(() => {
+    console.log('📢 App.tsx: Auto-start check. Conditions:', {
+      sessionActive: sessionState.isActive,
+      isListening: voiceListeningStateRef.current, // Use REF for immediate check
+      voiceError: !!voiceError,
+      isSpeaking,
+      isPlaying,
+      isRestartingVoice,
+      conversationActive,
+      audioInitialized
+    })
+    if (audioInitialized && 
+        sessionState.isActive && 
+        !voiceListeningStateRef.current && // Use REF
+        !voiceError && 
+        !isSpeaking && 
+        !isPlaying && 
+        !isRestartingVoice && 
+        !conversationActive) { 
+      console.log('📢 App.tsx: 🚀 Auto-starting voice recognition for new session.');
+      restartVoiceRecognition('Auto-start new session');
+    } else {
+      console.log('📢 App.tsx: Auto-start conditions NOT MET.');
+    }
+  }, [sessionState.isActive, voiceError, isSpeaking, isPlaying, isRestartingVoice, conversationActive, audioInitialized, restartVoiceRecognition]);
+
+  // Main restart mechanism - triggers when TTS completes and conditions are right.
+  useEffect(() => {
+    console.log('📢 App.tsx: TTS Completion restart check. Conditions:', {
+      ttsStatus,
+      conversationActive,
+      isListening: voiceListeningStateRef.current, // Use REF
+      voiceError: !!voiceError,
+      isSpeaking,
+      isPlaying,
+      isRestartingVoice,
+      sessionActive: sessionState.isActive,
+      audioInitialized
+    })
+
+    if (audioInitialized &&
+        ttsStatus === 'ready' && 
+        conversationActive && 
+        !voiceError && 
+        !isSpeaking && 
+        !isPlaying && 
+        !voiceListeningStateRef.current && // Use REF
+        !isRestartingVoice &&
+        sessionState.isActive) {
+      console.log('📢 App.tsx: 🎯 TTS completion conditions met - calling restartVoiceRecognition.');
+      
+      // Add a small delay to ensure TTS state has fully settled
+      const restartTimer = setTimeout(() => {
+        // Double-check conditions are still met
+        if (ttsStatus === 'ready' && 
+            conversationActive && 
+            !voiceListeningStateRef.current && 
+            !isRestartingVoice) {
+          console.log('📢 App.tsx: 🚀 TTS completion restart confirmed - triggering restart.');
+          restartVoiceRecognition('TTS completion');
+        } else {
+          console.log('📢 App.tsx: ❌ TTS completion restart conditions changed, aborting.');
+        }
+      }, 200); // Small delay to ensure state stability
+      
+      return () => clearTimeout(restartTimer);
+    } else {
+        console.log('📢 App.tsx: TTS completion restart conditions NOT MET.');
+    }
+  }, [ttsStatus, conversationActive, voiceError, isSpeaking, isPlaying, isRestartingVoice, sessionState.isActive, restartVoiceRecognition, audioInitialized]);
+
+  // Performance monitoring
+  const { fps, frameTime, memoryUsage } = usePerformanceMonitor()
 
   // Update performance metrics in store
   useEffect(() => {
@@ -252,127 +463,11 @@ const App: React.FC = () => {
     }
   }, [isInitialized, socketConnected, isVRSupported, initializeSession])
 
-  // Auto-start voice recognition when session is ready
-  useEffect(() => {
-    if (sessionState.isActive && !isListening && !voiceError && !isSpeaking && !isPlaying) {
-      startListening()
-    }
-  }, [sessionState.isActive, isListening, voiceError, startListening, isSpeaking, isPlaying])
-
-  // Monitor TTS status and reset if stuck
-  useEffect(() => {
-    const statusCheckTimer = setInterval(() => {
-      // Watchdog for TTS actually being stuck in isSpeaking or isPlaying for too long
-      if ((isSpeaking || isPlaying) && ttsStatus === 'speaking') {
-        // This indicates that the useTextToSpeech hook itself might be stuck
-        // Check how long it has been in this state (not implemented here, but could be)
-        // For now, if it's speaking/playing but the app thinks it's stuck, it's a deeper issue
-        // console.warn('TTS hook reporting speaking/playing, but ttsStatus watchdog trying to reset.');
-      } else if (ttsStatus === 'speaking' && !isSpeaking && !isPlaying) {
-        // This is the original case: app thinks it's speaking, but hook says it's not.
-        console.warn('CRITICAL: TTS status desync. App thinks TTS is speaking, but hook is idle. Resetting to ready.');
-        setTtsStatus('ready');
-      }
-
-      // Auto-clear 'failed' or 'no-audio' states after a timeout
-      if (ttsStatus === 'failed' || ttsStatus === 'no-audio') {
-        const clearTimer = setTimeout(() => {
-          if (ttsStatus === 'failed' || ttsStatus === 'no-audio') { // Check again before clearing
-            console.log('Auto-clearing TTS status:', ttsStatus, 'to ready after timeout');
-            setTtsStatus('ready');
-          }
-        }, 7000); // Clear after 7 seconds if still in this state
-        return () => clearTimeout(clearTimer);
-      }
-    }, 1000); // Check every 1 second
-
-    return () => clearInterval(statusCheckTimer);
-  }, [ttsStatus, isSpeaking, isPlaying]);
-
-  // Recovery mechanism: restart voice recognition if stuck
-  useEffect(() => {
-    const recoveryTimer = setInterval(() => {
-      // If we should be listening but aren't, and conversation is active, and TTS is ready (not speaking/failed)
-      if (conversationActive && 
-          !isListening && 
-          !voiceError && 
-          ttsStatus === 'ready' && // Ensure TTS is not active or in an error state
-          sessionState.isActive
-      ) {
-        console.warn('Recovery: Voice recognition seems stuck. Restarting.');
-        startListening();
-      }
-    }, 3000); // Check every 3 seconds
-
-    return () => clearInterval(recoveryTimer);
-  }, [conversationActive, isListening, voiceError, ttsStatus, sessionState.isActive, startListening]);
-
-  // Handle voice recognition restart after TTS completion
-  useEffect(() => {
-    // Only restart listening if:
-    // 1. TTS is ready (not speaking/failed/no-audio)
-    // 2. We're not currently listening
-    // 3. There's no voice error
-    // 4. We're in an active conversation
-    // 5. TTS is not currently active (isSpeaking/isPlaying)
-    if (ttsStatus === 'ready' && 
-        !isListening && 
-        !voiceError && 
-        conversationActive && 
-        !isSpeaking && 
-        !isPlaying) {
-      
-      console.log('TTS completed, restarting voice recognition');
-      
-      // Small delay to ensure all TTS processes are fully complete
-      const restartTimer = setTimeout(() => {
-        if (!isListening && !voiceError && !isSpeaking && !isPlaying) {
-          startListening();
-          console.log('Voice recognition restarted after TTS completion');
-        }
-      }, 500);
-
-      return () => clearTimeout(restartTimer);
-    }
-  }, [ttsStatus, isListening, voiceError, conversationActive, isSpeaking, isPlaying, startListening]);
-
-  // Manual reset function for when system gets stuck
-  const manualReset = useCallback(async () => {
-    console.log('Manual reset triggered')
-    
-    // Stop all current activities
-    stopTTS()
-    stopListening()
-    
-    // Reset all states
-    setTtsStatus('ready')
-    setConversationActive(false)
-    resetTranscript()
-    
-    // Clear any pending timers by forcing a state reset
-    setTimeout(async () => {
-      // Try to reinitialize audio
-      try {
-        await handleUserInteraction()
-      } catch (error) {
-        console.warn('Audio reinitialization failed during reset:', error)
-      }
-      
-      // Restart voice recognition
-      setTimeout(() => {
-        if (!voiceError) {
-          startListening()
-          console.log('Voice recognition restarted after manual reset')
-        }
-      }, 1000)
-    }, 500)
-  }, [stopTTS, stopListening, resetTranscript, handleUserInteraction, startListening, voiceError])
-
   if (!isInitialized) {
     return <LoadingOverlay message="Initializing Monday..." />
   }
 
-  if (voiceError) {
+  if (voiceError && voiceError.includes('not-allowed')) {
     return (
       <div style={{ 
         padding: '2rem', 
@@ -405,10 +500,9 @@ const App: React.FC = () => {
         height: '100vh', 
         backgroundColor: 'var(--offblack)' 
       }}>
-        {/* WebXR Canvas */}
         <Canvas
           camera={{ 
-            position: [0, 1.6, 0],  // Average eye height
+            position: [0, 1.6, 0],
             fov: 75 
           }}
           gl={{ 
@@ -416,12 +510,9 @@ const App: React.FC = () => {
             alpha: false,
             powerPreference: 'high-performance' 
           }}
-          frameloop="demand" // Optimize for Quest
+          frameloop="demand"
         >
-          <XR 
-            referenceSpace="local-floor"
-          >
-            {/* Lighting setup for VR */}
+          <XR referenceSpace="local-floor">
             <ambientLight intensity={0.3} color="#20808D" />
             <directionalLight 
               position={[5, 5, 5]} 
@@ -429,19 +520,13 @@ const App: React.FC = () => {
               color="#FBFAF4" 
             />
             
-            {/* VR Controllers and Hand Tracking */}
             <Controllers />
             <Hands />
-            
-            {/* Main Monday Scene */}
             <MondayScene />
-            
-            {/* Spatial Information Manager */}
             <SpatialOrchestrator />
           </XR>
         </Canvas>
 
-        {/* Voice Interface Overlay */}
         <VoiceInterface 
           isListening={isListening}
           transcript={transcript}
@@ -449,9 +534,12 @@ const App: React.FC = () => {
           onStopListening={stopListening}
           conversationActive={conversationActive}
           onUserInteraction={handleUserInteraction}
+          isRestartingVoice={isRestartingVoice}
+          isSpeaking={isSpeaking}
+          isPlaying={isPlaying}
         />
 
-        {/* Connection Status Indicator */}
+        {/* Connection Status */}
         <div style={{
           position: 'fixed',
           bottom: '1rem',
@@ -466,7 +554,7 @@ const App: React.FC = () => {
           {socketConnected ? 'Connected' : 'Disconnected'}
         </div>
 
-        {/* Conversation Status Indicator */}
+        {/* Conversation Status */}
         {conversationActive && (
           <div style={{
             position: 'fixed',
@@ -493,7 +581,7 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {/* TTS Status Indicator */}
+        {/* TTS Status */}
         {(isSpeaking || isPlaying) && (
           <div style={{
             position: 'fixed',
@@ -520,13 +608,33 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {/* TTS Status Indicators */}
+        {/* TTS Completion Indicator - only show during restart */}
+        {isRestartingVoice && (
+          <div style={{
+            position: 'fixed',
+            bottom: '3.5rem',
+            right: '1rem',
+            padding: '0.5rem 1rem',
+            backgroundColor: 'var(--true-turquoise)',
+            color: 'var(--paper-white)',
+            borderRadius: '0.25rem',
+            fontSize: '0.875rem',
+            zIndex: 1000,
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.5rem'
+          }}>
+            ✅ Monday finished - restarting voice recognition...
+          </div>
+        )}
+
+        {/* Audio Status Indicators */}
         {ttsStatus === 'no-audio' && (
           <div 
             onClick={handleUserInteraction}
             style={{
               position: 'fixed',
-              bottom: '3.5rem',
+              bottom: '6rem',
               right: '1rem',
               padding: '0.5rem 1rem',
               backgroundColor: '#f39c12',
@@ -534,9 +642,6 @@ const App: React.FC = () => {
               borderRadius: '0.25rem',
               fontSize: '0.875rem',
               zIndex: 1000,
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.5rem',
               cursor: 'pointer'
             }}
           >
@@ -544,12 +649,55 @@ const App: React.FC = () => {
           </div>
         )}
 
+        {/* TTS API Error Indicator - ElevenLabs specific */}
+        {ttsError && ttsError.includes('ElevenLabs API Error') && (
+          <div style={{
+            position: 'fixed',
+            bottom: '6rem',
+            right: '1rem',
+            padding: '1rem',
+            backgroundColor: '#dc3545',
+            color: 'var(--paper-white)',
+            borderRadius: '0.5rem',
+            fontSize: '0.875rem',
+            zIndex: 1000,
+            maxWidth: '400px',
+            cursor: 'pointer'
+          }}
+          onClick={clearTTSError}
+          >
+            <div style={{ fontWeight: 'bold', marginBottom: '0.5rem' }}>
+              🚫 ElevenLabs TTS Error
+            </div>
+            <div style={{ fontSize: '0.75rem', marginBottom: '0.5rem' }}>
+              {ttsError}
+            </div>
+            {ttsError.includes('quota') || ttsError.includes('credits') ? (
+              <div style={{ fontSize: '0.7rem', marginTop: '0.5rem', opacity: 0.9 }}>
+                💡 <strong>Solutions:</strong><br/>
+                • Check your ElevenLabs account billing<br/>
+                • Add more credits to your account<br/>
+                • Use shorter text for TTS requests<br/>
+                • Monday will continue working without voice responses
+              </div>
+            ) : (
+              <div style={{ fontSize: '0.7rem', marginTop: '0.5rem', opacity: 0.8 }}>
+                Voice responses are disabled until this is resolved.
+              </div>
+            )}
+            <div style={{ fontSize: '0.7rem', marginTop: '0.5rem', opacity: 0.6 }}>
+              Click to dismiss.
+            </div>
+          </div>
+        )}
+
+        {/* General TTS Failed Indicator */}
         {ttsStatus === 'failed' && (
           <div 
-            onClick={handleUserInteraction}
+            onClick={clearTTSError}
             style={{
               position: 'fixed',
-              bottom: '3.5rem',
+              bottom: '6rem',
               right: '1rem',
               padding: '0.5rem 1rem',
               backgroundColor: '#dc3545',
@@ -557,9 +705,6 @@ const App: React.FC = () => {
               borderRadius: '0.25rem',
               fontSize: '0.875rem',
               zIndex: 1000,
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.5rem',
               cursor: 'pointer'
             }}
           >
@@ -567,87 +712,138 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {/* TTS Error Indicator */}
-        {ttsError && (
-          <div style={{
-            position: 'fixed',
-            bottom: '3.5rem',
-            right: '1rem',
-            padding: '0.5rem 1rem',
-            backgroundColor: '#dc3545',
-            color: 'var(--paper-white)',
-            borderRadius: '0.25rem',
-            fontSize: '0.875rem',
-            zIndex: 1000
-          }}>
-            TTS Error: {ttsError}
-          </div>
-        )}
-
-        {/* Manual Reset Button - visible when system might be stuck */}
-        {(ttsStatus === 'speaking' && !isSpeaking && !isPlaying) || 
-         (conversationActive && !isListening && !isSpeaking && !isPlaying) && (
+        {/* Voice Error Indicator */}
+        {voiceError && !voiceError.includes('not-allowed') && (
           <div style={{
             position: 'fixed',
             bottom: '8rem',
-            left: '50%',
-            transform: 'translateX(-50%)',
-            zIndex: 1001
-          }}>
-            <button
-              onClick={manualReset}
-              style={{
-                padding: '0.75rem 1.5rem',
-                backgroundColor: '#dc3545',
-                color: 'var(--paper-white)',
-                border: 'none',
-                borderRadius: '0.5rem',
-                fontSize: '0.875rem',
-                cursor: 'pointer',
-                fontWeight: 'bold'
-              }}
-            >
-              🔄 Reset System
-            </button>
+            right: '1rem',
+            padding: '0.5rem 1rem',
+            backgroundColor: '#f39c12',
+            color: 'var(--paper-white)',
+            borderRadius: '0.25rem',
+            fontSize: '0.875rem',
+            zIndex: 1000,
+            cursor: 'pointer'
+          }}
+          onClick={clearError}
+          >
+            ⚠️ Voice issue: {voiceError} (click to dismiss)
           </div>
         )}
 
-        {/* Performance Monitor (Development Only) */}
+        {/* Enhanced Development Monitor with Speech Recognition Debug */}
         {window.location.hostname === 'localhost' && (
           <div 
-            onClick={manualReset}
+            onClick={handleUserInteraction}
             style={{
               position: 'fixed',
               top: '1rem',
               left: '1rem',
               padding: '0.5rem',
-              backgroundColor: 'rgba(9, 23, 23, 0.8)',
+              backgroundColor: 'rgba(9, 23, 23, 0.95)',
               color: 'var(--paper-white)',
               fontSize: '0.75rem',
               borderRadius: '0.25rem',
               fontFamily: 'monospace',
               zIndex: 1000,
               cursor: 'pointer',
-              border: ttsStatus === 'speaking' && !isSpeaking && !isPlaying ? '2px solid #dc3545' : '1px solid #20808D'
+              border: isListening ? '2px solid #00ff00' : '1px solid #20808D',
+              maxWidth: '300px'
             }}
-            title="Click to reset system if stuck"
           >
+            <div style={{ fontWeight: 'bold', color: '#00ff88', marginBottom: '0.5rem' }}>
+              SPEECH RECOGNITION DEBUG
+            </div>
             <div>FPS: {fps}</div>
             <div>Frame: {frameTime.toFixed(2)}ms</div>
             <div>Memory: {memoryUsage.toFixed(1)}MB</div>
             <div>VR: {isVRSupported ? 'Yes' : 'No'}</div>
-            <div>TTS: {isSpeaking ? 'Speaking' : isPlaying ? 'Playing' : 'Ready'}</div>
-            <div>Conv: {conversationActive ? 'Active' : 'Waiting'}</div>
-            <div>Audio: {audioInitialized ? 'Ready' : 'Not Init'}</div>
-            <div>Status: {ttsStatus}</div>
-            <div>Listen: {isListening ? 'ON' : 'OFF'}</div>
-            {(ttsStatus === 'speaking' && !isSpeaking && !isPlaying) && (
-              <div style={{ color: '#dc3545', fontWeight: 'bold' }}>⚠️ STUCK</div>
+            <div style={{ color: isSpeaking || isPlaying ? '#ff6666' : '#66ff66' }}>
+              TTS: {isSpeaking ? 'Speaking' : isPlaying ? 'Playing' : 'Ready'}
+            </div>
+            <div style={{ color: conversationActive ? '#66ff66' : '#ffff66' }}>
+              Conv: {conversationActive ? 'Active' : 'Waiting'}
+            </div>
+            <div style={{ color: audioInitialized ? '#66ff66' : '#ff6666' }}>
+              Audio: {audioInitialized ? 'Ready' : 'Not Init'}
+            </div>
+            <div style={{ color: ttsStatus === 'ready' ? '#66ff66' : '#ff6666' }}>
+              Status: {ttsStatus}
+            </div>
+            <div style={{ 
+              color: isListening ? '#00ff00' : '#ff6666',
+              fontWeight: 'bold',
+              backgroundColor: isListening ? 'rgba(0,255,0,0.1)' : 'rgba(255,0,0,0.1)',
+              padding: '0.2rem'
+            }}>
+              🎤 Listen: {isListening ? 'ON' : 'OFF'}
+            </div>
+            <div style={{ color: isRestartingVoice ? '#ffff66' : '#66ff66' }}>
+              Restart: {isRestartingVoice ? 'YES' : 'NO'}
+            </div>
+            <div style={{ color: voiceError ? '#ff6666' : '#66ff66' }}>
+              Error: {voiceError || 'None'}
+            </div>
+            {transcript && (
+              <div style={{ 
+                color: '#66ffff', 
+                marginTop: '0.5rem',
+                padding: '0.2rem',
+                backgroundColor: 'rgba(102,255,255,0.1)',
+                borderRadius: '0.2rem',
+                fontSize: '0.7rem'
+              }}>
+                Last: "{transcript.substring(0, 50)}{transcript.length > 50 ? '...' : ''}"
+              </div>
             )}
+            <div style={{ color: '#ffaa66', marginTop: '0.5rem', fontSize: '0.6rem' }}>
+              Click to reset system
+            </div>
+            <div style={{ marginTop: '0.5rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation()
+                  if (isListening) {
+                    stopListening()
+                  } else {
+                    startListening()
+                  }
+                }}
+                style={{
+                  fontSize: '0.6rem',
+                  padding: '0.2rem 0.4rem',
+                  backgroundColor: isListening ? '#ff4444' : '#44ff44',
+                  color: '#000',
+                  border: 'none',
+                  borderRadius: '0.2rem',
+                  cursor: 'pointer'
+                }}
+              >
+                {isListening ? '🛑 Stop' : '🎤 Test'}
+              </button>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation()
+                  resetTranscript()
+                }}
+                style={{
+                  fontSize: '0.6rem',
+                  padding: '0.2rem 0.4rem',
+                  backgroundColor: '#4444ff',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: '0.2rem',
+                  cursor: 'pointer'
+                }}
+              >
+                🧹 Clear
+              </button>
+            </div>
           </div>
         )}
 
-        {/* Instructions for first-time users */}
+        {/* Welcome Instructions */}
         {!sessionState.hasCompletedIntro && !conversationActive && (
           <div style={{
             position: 'fixed',
@@ -666,30 +862,20 @@ const App: React.FC = () => {
             <h3 style={{ color: 'var(--true-turquoise)', marginBottom: '1rem' }}>
               Welcome to Monday
             </h3>
-            <p><strong>Say "Monday, hello"</strong> to start your learning journey.</p>
+            <p><strong>Say "Hey Monday"</strong> to start your learning journey.</p>
             <p style={{ fontSize: '0.875rem', margin: '1rem 0' }}>
-              After that, you can ask questions without saying "Monday" each time:
+              After that, you can ask questions without saying "Hey Monday" each time:
             </p>
             <ul style={{ fontSize: '0.875rem', textAlign: 'left', color: 'var(--true-turquoise)' }}>
-              <li>"Monday, tell me about quantum physics"</li>
-              <li>"How does it work?" (no Monday needed)</li>
+              <li>"Hey Monday, tell me about quantum physics"</li>
+              <li>"How does it work?" (no Hey Monday needed)</li>
               <li>"Think about machine learning algorithms"</li>
               <li>"Research the latest developments"</li>
             </ul>
             <p style={{ fontSize: '0.75rem', opacity: 0.8, marginTop: '1rem' }}>
               <strong>Important:</strong> For voice responses, click "Start Listening" first or speak 
-              "Monday, hello" to initialize audio.
+              "Hey Monday" to initialize audio.
             </p>
-            {ttsError && (
-              <p style={{ fontSize: '0.75rem', color: '#dc3545', marginTop: '0.5rem' }}>
-                Audio issue: {ttsError}
-              </p>
-            )}
-            {ttsStatus === 'no-audio' && (
-              <p style={{ fontSize: '0.75rem', color: '#f39c12', marginTop: '0.5rem' }}>
-                ⚠️ Audio not initialized - Monday can hear you but can't speak back yet
-              </p>
-            )}
           </div>
         )}
       </div>
@@ -697,4 +883,5 @@ const App: React.FC = () => {
   )
 }
 
-export default App 
+export default App
+ 
