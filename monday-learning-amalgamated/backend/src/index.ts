@@ -238,7 +238,8 @@ io.on('connection', (socket) => {
         try {
           let response;
           
-          if (perplexityService) {
+          // Temporarily disable Perplexity to test TTS flow with fallback responses
+          if (false && perplexityService) {
             // Use Perplexity if available
             if (mode === 'greeting') {
               // Handle greetings with basic mode for concise responses
