@@ -298,7 +298,35 @@ class VoiceSystemController {
 
   // ============ TTS MANAGEMENT ============
   
+  /**
+   * Stops any currently playing TTS audio and resets relevant state.
+   */
+  private async stopTTS(): Promise<void> {
+    // Stop and close the audio context if it exists
+    if (this.audioContext) {
+      try {
+        await this.audioContext.close();
+      } catch (e) {
+        // Ignore errors
+      }
+      this.audioContext = null;
+    }
+    // Close any open TTS WebSocket
+    if (this.ttsWebSocket) {
+      try {
+        this.ttsWebSocket.close();
+      } catch (e) {}
+      this.ttsWebSocket = null;
+    }
+    // Reset playback flags and buffers
+    this.systemStatus.ttsPlaying = false;
+    this.systemStatus.ttsGenerating = false;
+    this.allAudioBuffers = [];
+  }
+
   private async playTTSWithGuaranteedCompletion(text: string): Promise<void> {
+    // Stop any currently playing TTS before starting new one
+    await this.stopTTS();
     console.log('VoiceController: 🔊 Starting TTS with guaranteed completion:', text.substring(0, 50))
     
     if (!this.ttsConfig.apiKey) {
