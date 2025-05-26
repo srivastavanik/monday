@@ -9,11 +9,11 @@ import dotenv from 'dotenv';
 import path from 'path';
 
 // Load environment variables from the root directory
-dotenv.config({ path: path.resolve(process.cwd(), '../.env') });
+dotenv.config({ path: path.resolve(process.cwd(), '.env') });
 console.log('[BACKEND LOG] Environment loaded, PORT:', process.env.PORT);
 console.log('[BACKEND LOG] PERPLEXITY_API_KEY exists:', !!process.env.PERPLEXITY_API_KEY);
 console.log('[BACKEND LOG] Current working directory:', process.cwd());
-console.log('[BACKEND LOG] Attempting to load .env from:', path.resolve(process.cwd(), '../.env'));
+console.log('[BACKEND LOG] Attempting to load .env from:', path.resolve(process.cwd(), '.env'));
 
 // Import services dynamically to handle errors gracefully
 let perplexityService: any = null;
@@ -134,25 +134,23 @@ io.use((socket, next) => {
   next();
 });
 
-// Helper function to detect query type and mode
-function detectQueryMode(command: string): 'greeting' | 'basic' | 'reasoning' | 'research' {
-  const lowerCommand = command.toLowerCase();
+// Helper function to determine which model to use based on command
+function determineQueryMode(command: string): { mode: string; model: string } {
+  const lowerCommand = command.toLowerCase().trim()
   
-  if (lowerCommand.includes('hello') || lowerCommand.includes('hi') || lowerCommand.includes('hey monday')) {
-    return 'greeting';
+  // Remove "hey monday" prefix for analysis
+  const cleanCommand = lowerCommand.replace(/^hey monday[,\s]*/i, '').trim()
+  
+  if (cleanCommand.startsWith('think about') || cleanCommand.includes('think about')) {
+    return { mode: 'reasoning', model: 'sonar-reasoning-pro' }
+  } else if (cleanCommand.startsWith('research') || cleanCommand.includes('research')) {
+    return { mode: 'research', model: 'sonar-deep-research' }
+  } else if (cleanCommand.startsWith('search the web') || cleanCommand.includes('search the web')) {
+    return { mode: 'web_search', model: 'sonar-pro' }
+  } else {
+    // Basic conversations and queries use the regular sonar model
+    return { mode: 'basic', model: 'sonar' }
   }
-  
-  if (lowerCommand.includes('think about') || lowerCommand.includes('analyze') || 
-      lowerCommand.includes('break down') || lowerCommand.includes('step by step')) {
-    return 'reasoning';
-  }
-  
-  if (lowerCommand.includes('research') || lowerCommand.includes('deep dive') || 
-      lowerCommand.includes('comprehensive') || lowerCommand.includes('investigate')) {
-    return 'research';
-  }
-  
-  return 'basic';
 }
 
 // Helper function to get conversation context
@@ -246,86 +244,93 @@ io.on('connection', (socket) => {
         });
         
         try {
-          let response;
-          
-          // Use Perplexity if available
-          if (perplexityService) {
-            // Handle greetings with basic mode for concise responses
-            if (mode === 'greeting') {
-              response = await perplexityService.processQuery({
-                query: responseQuery,
-                mode: 'basic',
-                context: [],
-                sessionId: socket.id
-              });
-            } else if (responseQuery.length > 0) {
-              // Process actual learning queries with conversation context
-              const contextEntries = getConversationContext(socket.id);
-              const fullQuery = contextEntries.length > 0 
-                ? `Previous conversation: ${contextEntries.slice(-4).join(' ')}\n\nCurrent question: ${responseQuery}`
-                : responseQuery;
-              
-              response = await perplexityService.processQuery({
-                query: fullQuery,
-                mode: mode === 'reasoning' ? 'reasoning' : mode === 'research' ? 'research' : 'basic',
-                context: contextEntries.slice(-6),
-                sessionId: socket.id
-              });
+          console.log(`[info]: Processing command for ${socket.id}:`, {
+            service: 'monday-backend',
+            isMondayActivation: isMondayActivation,
+            isInActiveConversation: isInActiveConversation,
+            sessionInConversation: sessionState.isInConversation
+          });
+
+          // Determine query mode and model
+          const { mode: determinedMode, model } = determineQueryMode(command)
+          console.log(`[info]: Using ${model} model for ${determinedMode} query`)
+
+          // Prepare the query for the AI service
+          let responseQuery = command;
+          if (isMondayActivation) {
+            responseQuery = command.replace(/^hey monday[,\s]*/i, '').trim();
+          }
+
+          // Ensure we have meaningful content for the API
+          if (!responseQuery || responseQuery.length === 0) {
+            if (isMondayActivation && (commandLower.includes('hello') || commandLower.includes('hi') || 
+                       command.trim().toLowerCase() === 'hey monday' || 
+                       commandLower.match(/^hey monday[,.]?\s*$/))) {
+              responseQuery = "The user just greeted me with 'Hey Monday'. Respond warmly as Monday, their AI learning companion, and ask what they'd like to explore or learn about today.";
             } else {
-              // Empty query - ask for clarification
-              response = await perplexityService.processQuery({
-                query: "The user activated Monday but didn't ask a specific question. Politely ask what they'd like to learn about today.",
-                mode: 'basic',
-                context: getConversationContext(socket.id).slice(-2),
-                sessionId: socket.id
+              responseQuery = "The user activated Monday but didn't provide a specific question. Ask them what they'd like to explore or learn about.";
+            }
+          }
+
+          // Get AI response using the determined model
+          let response;
+          try {
+            if (determinedMode === 'reasoning') {
+              response = await perplexityService.reasoningQuery(responseQuery, getConversationContext(socket.id));
+            } else if (determinedMode === 'research') {
+              response = await perplexityService.deepResearch(responseQuery);
+            } else {
+              response = await perplexityService.basicQuery(responseQuery, {
+                service: 'monday-backend',
+                isMondayActivation: isMondayActivation,
+                isInActiveConversation: isInActiveConversation,
+                sessionInConversation: sessionState.isInConversation
               });
             }
-          } else {
-            // Fallback responses if Perplexity isn't available
+          } catch (apiError: any) {
+            console.warn('Perplexity API failed, using fallback response:', apiError.message);
+            
+            // Create fallback response
             const fallbackResponses = {
-              greeting: "Hey there! I'm Monday, your AI learning companion. What would you like to explore today?",
-              basic: "That's a fascinating topic! While I'm working on accessing my full knowledge base, I'm still here to help guide your learning journey. What specifically interests you about this?",
-              reasoning: "I'd love to think through that with you step by step! Could you tell me more about what aspect you'd like me to analyze?",
-              research: "That sounds like a great topic for deep research! What particular angle or question would you like me to focus on?"
+              greeting: "Hi there! I'm Monday, your AI learning companion. I'm having some connectivity issues right now, but I'm still here to help guide your learning journey. What would you like to explore?",
+              basic: `I'd love to help you learn about ${responseQuery}! I'm experiencing some connectivity issues with my knowledge base right now, but I can still guide you through this topic. What specific aspect interests you most?`,
+              reasoning: `That's a great topic to think through step by step! While I'm having some connectivity issues, I can still help you break down ${responseQuery} into logical components. What's your current understanding of this topic?`,
+              research: `Excellent choice for deep research! I'm experiencing some connectivity issues with my research databases, but I can still help you explore ${responseQuery} systematically. What angle would you like to investigate first?`
             };
             
             response = {
-              id: 'fallback',
+              id: 'fallback_' + Date.now(),
               model: 'fallback',
-              content: fallbackResponses[mode] || fallbackResponses.basic,
+              content: fallbackResponses[determinedMode] || fallbackResponses.basic,
+              fullContent: fallbackResponses[determinedMode] || fallbackResponses.basic,
               citations: [],
               metadata: { tokensUsed: 0, responseTime: 0 }
             };
           }
-          
-          // Update conversation context
+
+          // Add to conversation history
           updateConversationContext(socket.id, command, response.content);
           
           // Create spatial learning panels based on response type
-          const panelData = createSpatialPanels(response, mode, responseQuery);
+          const panelData = createSpatialPanels(response, determinedMode, responseQuery, model);
           
           // Send response to frontend
-          const responseData = {
-            type: mode === 'greeting' ? 'greeting' : 'learning_response',
-            message: response.content,
-            action: mode === 'research' ? 'show_research_panel' : mode === 'reasoning' ? 'show_reasoning_panel' : 'show_info_panel',
+          socket.emit('voice_response', {
+            message: response.content, // Short TTS message
             data: {
-              title: mode === 'greeting' ? 'Welcome to Monday' : `Learning: ${responseQuery}`,
-              content: response.content,
+              panels: panelData,
+              mode: determinedMode,
+              model: model, // Include model info in response
+              query: responseQuery,
               citations: response.citations || [],
               reasoning: response.reasoning || [],
-              sources: response.sources || [],
-              mode: mode,
-              timestamp: new Date().toISOString(),
-              metadata: response.metadata,
-              panels: panelData,
-              conversationActive: true // Always set to true after any interaction
+              metadata: response.metadata
             }
-          };
-          
-          socket.emit('voice_response', responseData);
+          });
+
           logger.info(`Monday response sent to ${socket.id}:`, {
-            mode,
+            service: 'monday-backend',
+            mode: determinedMode,
             responseLength: response.content.length,
             citationCount: response.citations?.length || 0,
             tokensUsed: response.metadata?.tokensUsed || 0,
@@ -458,7 +463,7 @@ process.on('unhandledRejection', (reason, promise) => {
 console.log('[BACKEND LOG] All setup completed - ready for connections!');
 
 // Helper function to create spatial learning panels
-function createSpatialPanels(response: any, mode: string, query: string): any[] {
+function createSpatialPanels(response: any, mode: string, query: string, model: string): any[] {
   const panels: any[] = [];
   
   // Main content panel - use fullContent if available, otherwise content
@@ -469,28 +474,32 @@ function createSpatialPanels(response: any, mode: string, query: string): any[] 
     type: 'content',
     position: [0, 1.5, -2],
     rotation: [0, 0, 0],
-    title: mode === 'greeting' ? 'Welcome to Monday' : `Learning: ${query}`,
+    title: mode === 'greeting' ? 'Welcome to Monday' : `${mode.charAt(0).toUpperCase() + mode.slice(1)}: ${query.substring(0, 50)}${query.length > 50 ? '...' : ''}`,
     content: panelContent,
     isActive: true,
     opacity: 1,
-    createdAt: Date.now()
+    createdAt: Date.now(),
+    model: model // Add model info to panel
   });
   
   // Citations panel if available
   if (response.citations && response.citations.length > 0) {
+    const citationsText = response.citations.map((citation: any, index: number) => 
+      `[${index + 1}] ${citation.title || citation.url || citation}`
+    ).join('\n\n');
+    
     panels.push({
       id: `panel_${Date.now()}_citations`,
       type: 'citations',
-      position: [2, 1.2, -1.5],
-      rotation: [0, -30, 0],
-      title: 'Sources & Citations',
-      content: response.citations.map((c: any, i: number) => 
-        `${i + 1}. ${c.title}\n${c.snippet || c.text || ''}`
-      ).join('\n\n'),
-      citations: response.citations,
+      position: [2, 1.5, -2],
+      rotation: [0, 0, 0],
+      title: `Sources (${response.citations.length})`,
+      content: citationsText,
       isActive: false,
-      opacity: 0.8,
-      createdAt: Date.now()
+      opacity: 1,
+      createdAt: Date.now(),
+      citations: response.citations,
+      model: model
     });
   }
   

@@ -57,7 +57,7 @@ interface QueryContext {
 
 class PerplexityService {
   private apiKey: string
-  private baseUrl = 'https://api.perplexity.ai'
+  private readonly baseUrl: string = 'https://api.perplexity.ai'
   private conversationHistory: string[] = []
   private systemPrompt = `You are Monday, an advanced AI learning companion for VR education, powered by Perplexity Sonar.
 
@@ -86,22 +86,29 @@ Response Guidelines:
     }
     console.log('[DEBUG] API Key length:', this.apiKey.length)
     console.log('[DEBUG] API Key first 10 chars:', this.apiKey.substring(0, 10))
+    console.log('[DEBUG] Base URL:', this.baseUrl)
   }
 
   private async makeRequest(endpoint: string, data: any): Promise<any> {
     const startTime = Date.now()
     
+    // Ensure endpoint starts with /
+    const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`
+    const fullUrl = `${this.baseUrl}${cleanEndpoint}`
+    
     try {
       // Log the request details for debugging
       console.log('[DEBUG] Making request to Perplexity API:', {
-        url: `${this.baseUrl}${endpoint}`,
+        baseUrl: this.baseUrl,
+        endpoint: cleanEndpoint,
+        fullUrl: fullUrl,
         apiKey: this.apiKey.substring(0, 10) + '...',
-        data: JSON.stringify(data, null, 2)
+        dataKeys: Object.keys(data)
       })
 
       const response = await axios({
         method: 'post',
-        url: `${this.baseUrl}${endpoint}`,
+        url: fullUrl,
         data: data,
         headers: {
           'Content-Type': 'application/json',
@@ -116,11 +123,12 @@ Response Guidelines:
       // Log the complete response for debugging
       console.log('[DEBUG] Perplexity API response:', {
         status: response.status,
-        data: JSON.stringify(response.data, null, 2)
+        hasData: !!response.data,
+        dataKeys: response.data ? Object.keys(response.data) : []
       })
       
       logger.info('Perplexity API request completed', {
-        endpoint,
+        endpoint: cleanEndpoint,
         responseTime: `${responseTime}ms`,
         statusCode: response.status
       })
@@ -128,8 +136,16 @@ Response Guidelines:
       return response.data
     } catch (error: any) {
       const responseTime = Date.now() - startTime
+      console.error('[DEBUG] Perplexity API request failed:', {
+        fullUrl: fullUrl,
+        error: error.message,
+        status: error.response?.status,
+        hostname: error.hostname,
+        code: error.code
+      })
+      
       logger.error('Perplexity API request failed', {
-        endpoint,
+        endpoint: cleanEndpoint,
         responseTime: `${responseTime}ms`,
         error: error.message,
         status: error.response?.status,
@@ -139,7 +155,7 @@ Response Guidelines:
     }
   }
 
-  private async basicQuery(query: string, context: QueryContext): Promise<PerplexityResponse> {
+  public async basicQuery(query: string, context: QueryContext): Promise<PerplexityResponse> {
     try {
       // Format conversation history with alternating roles
       const formattedHistory = this.conversationHistory.map((msg, index) => ({
@@ -160,58 +176,37 @@ Response Guidelines:
         }
       ]
 
-      console.log('[DEBUG] Making request to Perplexity API:', {
-        url: this.baseUrl,
-        apiKey: this.apiKey.substring(0, 10) + '...',
-        data: JSON.stringify({
-          model: 'sonar-pro',
-          messages,
-          max_tokens: 150,
-          temperature: 0.3
-        }, null, 2)
-      })
-
       const response = await this.makeRequest('/chat/completions', {
-        model: 'sonar-pro',
-        messages,
-        max_tokens: 150,
-        temperature: 0.3
+        model: 'sonar',
+        messages: messages,
+        max_tokens: 300,
+        temperature: 0.7,
+        top_p: 0.9,
+        stream: false
       })
 
-      if (!response.choices?.[0]?.message?.content) {
-        throw new Error('No response content in Perplexity API response')
-      }
+      // Create short TTS response and full content
+      const fullContent = response.choices[0].message.content
+      const shortResponse = this.createShortTTSResponse(fullContent, query)
 
-      const fullContent = response.choices[0].message.content.trim()
-      console.log('[DEBUG] Full Perplexity response content:', fullContent)
-      
-      // Extract a short TTS-friendly summary (first 1-2 sentences)
-      const sentences = fullContent.split(/[.!?]+/).filter(s => s.trim().length > 0)
-      const ttsContent = sentences.slice(0, 2).join('. ').trim()
-      const finalTtsContent = ttsContent.endsWith('.') ? ttsContent : ttsContent + '.'
-      
-      // Add both query and response to history
-      this.conversationHistory.push(query)
-      this.conversationHistory.push(fullContent)
-      
       return {
-        id: response.id || 'basic_query',
-        model: response.model || 'sonar-pro',
-        content: finalTtsContent, // Short version for TTS
-        fullContent: fullContent, // Full version for panels
+        id: response.id,
+        model: response.model,
+        content: shortResponse,
+        fullContent: fullContent,
         citations: this.extractCitations(response),
         metadata: {
           tokensUsed: response.usage?.total_tokens || 0,
-          responseTime: 0
+          responseTime: Date.now() - Date.now()
         }
       }
     } catch (error) {
-      console.error('[DEBUG] Failed to process Perplexity query:', error)
+      console.error('Perplexity basicQuery error:', error)
       throw error
     }
   }
 
-  async reasoningQuery(query: string, context?: string[]): Promise<PerplexityResponse> {
+  public async reasoningQuery(query: string, context?: string[]): Promise<PerplexityResponse> {
     const messages = [
       {
         role: 'system',
@@ -258,8 +253,8 @@ Educational Focus:
       model: 'sonar-reasoning-pro',
       messages: messages,
       max_tokens: 500,
-      temperature: 0.2
-      // Using default search settings for best results
+      temperature: 0.2,
+      stream: false
     }
 
     const result = await this.makeRequest('/chat/completions', requestData)
@@ -283,7 +278,7 @@ Educational Focus:
     }
   }
 
-  async deepResearch(query: string): Promise<PerplexityResponse> {
+  public async deepResearch(query: string): Promise<PerplexityResponse> {
     const requestData = {
       model: 'sonar-deep-research',
       messages: [
@@ -317,8 +312,8 @@ Voice-Friendly Delivery:
         }
       ],
       max_tokens: 800,
-      temperature: 0.3
-      // Deep research model works best with minimal configuration
+      temperature: 0.3,
+      stream: false
     }
 
     const result = await this.makeRequest('/chat/completions', requestData)
@@ -342,25 +337,15 @@ Voice-Friendly Delivery:
     }
   }
 
-  private extractCitations(result: any): Citation[] {
-    const citations: Citation[] = []
+  private extractCitations(response: any): Citation[] {
+    if (!response.citations) return []
     
-    // Perplexity API now automatically includes citations in responses
-    // Check for citations in the response data
-    if (result.citations) {
-      result.citations.forEach((citation: any, index: number) => {
-        citations.push({
-          id: `citation_${index}`,
-          url: citation.url || '',
-          title: citation.title || 'Untitled',
-          snippet: citation.text || citation.snippet || '',
-          publishedDate: citation.published_date,
-          domain: this.extractDomain(citation.url || '')
-        })
-      })
-    }
-    
-    return citations
+    return response.citations.map((citation: any, index: number) => ({
+      id: `citation_${index}`,
+      url: citation.url || citation,
+      title: citation.title || `Source ${index + 1}`,
+      snippet: citation.snippet || citation.text || ''
+    }))
   }
 
   private extractReasoningSteps(content: string): ReasoningStep[] {
@@ -410,6 +395,24 @@ Voice-Friendly Delivery:
     } catch {
       return 'unknown'
     }
+  }
+
+  private createShortTTSResponse(fullContent: string, query: string): string {
+    // Extract first 1-2 sentences for TTS
+    const sentences = fullContent.split(/[.!?]+/).filter(s => s.trim().length > 0)
+    let shortResponse = sentences.slice(0, 2).join('. ').trim()
+    
+    // Ensure it ends with punctuation
+    if (!shortResponse.endsWith('.') && !shortResponse.endsWith('!') && !shortResponse.endsWith('?')) {
+      shortResponse += '.'
+    }
+    
+    // If too long, truncate to ~150 characters
+    if (shortResponse.length > 150) {
+      shortResponse = shortResponse.substring(0, 147) + '...'
+    }
+    
+    return shortResponse
   }
 
   async processQuery(queryData: PerplexityQuery): Promise<PerplexityResponse> {

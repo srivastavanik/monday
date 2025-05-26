@@ -1,6 +1,5 @@
-import React, { useRef, useMemo, useEffect } from 'react'
-import { useFrame } from '@react-three/fiber'
-import { Text, Plane, Html } from '@react-three/drei'
+import React, { useRef, useMemo } from 'react'
+import { Text, Plane } from '@react-three/drei'
 import { MondayPanel } from '../store/mondayStore'
 
 interface InformationPanelProps {
@@ -15,40 +14,21 @@ const InformationPanel: React.FC<InformationPanelProps> = ({
   onSelect 
 }) => {
   const meshRef = useRef<any>()
-  const textRef = useRef<any>()
-  
-  // Debug logging
-  useEffect(() => {
-    console.log('InformationPanel: Rendering panel:', panel.title, 'at position:', panel.position)
-  }, [panel])
-  
-  // Animate panel based on state
-  useFrame((state) => {
-    if (meshRef.current) {
-      // Gentle floating animation
-      meshRef.current.position.y = panel.position[1] + Math.sin(state.clock.elapsedTime * 0.5) * 0.05
-      
-      // Glow effect for active panels
-      if (isActive) {
-        meshRef.current.scale.setScalar(1 + Math.sin(state.clock.elapsedTime * 2) * 0.02)
-      }
-    }
-  })
 
   // Panel dimensions based on content
   const dimensions = useMemo(() => {
-    const baseWidth = 1.5
-    const baseHeight = 1.0
+    const baseWidth = 2.5
+    const baseHeight = 1.8
     const contentLength = panel.content.length
     
     // Adjust size based on content
-    const width = Math.min(baseWidth + (contentLength / 1000) * 0.5, 3.0)
-    const height = Math.min(baseHeight + (contentLength / 500) * 0.3, 2.0)
+    const width = Math.min(baseWidth + (contentLength / 1000) * 0.5, 4.0)
+    const height = Math.min(baseHeight + (contentLength / 500) * 0.3, 3.5)
     
     return { width, height }
   }, [panel.content])
 
-  // Color scheme based on panel type and Perplexity branding
+  // Color scheme based on panel type and app theming
   const colors = useMemo(() => {
     const baseColors = {
       content: '#FBFAF4',      // Paper White
@@ -66,12 +46,19 @@ const InformationPanel: React.FC<InformationPanelProps> = ({
     }
   }, [panel.type, isActive])
 
-  // Format content for display
+  // Format content for display - show "Monday:" prefix
   const formattedContent = useMemo(() => {
-    if (panel.content.length > 300) {
-      return panel.content.substring(0, 297) + '...'
+    let content = panel.content
+    if (content.length > 500) {
+      content = content.substring(0, 497) + '...'
     }
-    return panel.content
+    
+    // Add "Monday:" prefix if not already present
+    if (!content.toLowerCase().startsWith('monday:')) {
+      content = `Monday: ${content}`
+    }
+    
+    return content
   }, [panel.content])
 
   return (
@@ -112,8 +99,8 @@ const InformationPanel: React.FC<InformationPanelProps> = ({
       
       {/* Panel title */}
       <Text
-        position={[0, dimensions.height/2 - 0.1, 0]}
-        fontSize={0.08}
+        position={[0, dimensions.height/2 - 0.15, 0]}
+        fontSize={0.1}
         color={colors.text}
         anchorX="center"
         anchorY="middle"
@@ -124,22 +111,21 @@ const InformationPanel: React.FC<InformationPanelProps> = ({
       
       {/* Panel content */}
       <Text
-        ref={textRef}
-        position={[0, 0, 0]}
-        fontSize={0.05}
+        position={[0, -0.1, 0]}
+        fontSize={0.06}
         color={colors.text}
         anchorX="center"
         anchorY="middle"
-        maxWidth={dimensions.width - 0.2}
-        lineHeight={1.2}
+        maxWidth={dimensions.width - 0.3}
+        lineHeight={1.3}
       >
         {formattedContent}
       </Text>
       
       {/* Citations indicator */}
       {panel.citations && panel.citations.length > 0 && (
-        <group position={[dimensions.width/2 - 0.1, -dimensions.height/2 + 0.1, 0.01]}>
-          <Plane args={[0.15, 0.05]}>
+        <group position={[dimensions.width/2 - 0.15, -dimensions.height/2 + 0.1, 0.01]}>
+          <Plane args={[0.25, 0.08]}>
             <meshStandardMaterial 
               color={colors.border}
               transparent
@@ -148,19 +134,19 @@ const InformationPanel: React.FC<InformationPanelProps> = ({
           </Plane>
           <Text
             position={[0, 0, 0.01]}
-            fontSize={0.03}
+            fontSize={0.04}
             color="#FBFAF4"
             anchorX="center"
             anchorY="middle"
           >
-            {panel.citations.length} refs
+            {panel.citations.length} sources
           </Text>
         </group>
       )}
       
       {/* Type indicator */}
-      <group position={[-dimensions.width/2 + 0.1, dimensions.height/2 - 0.05, 0.01]}>
-        <Plane args={[0.2, 0.05]}>
+      <group position={[-dimensions.width/2 + 0.15, dimensions.height/2 - 0.08, 0.01]}>
+        <Plane args={[0.25, 0.08]}>
           <meshStandardMaterial 
             color={colors.border}
             transparent
@@ -169,7 +155,7 @@ const InformationPanel: React.FC<InformationPanelProps> = ({
         </Plane>
         <Text
           position={[0, 0, 0.01]}
-          fontSize={0.025}
+          fontSize={0.035}
           color="#FBFAF4"
           anchorX="center"
           anchorY="middle"
@@ -177,15 +163,6 @@ const InformationPanel: React.FC<InformationPanelProps> = ({
           {panel.type.toUpperCase()}
         </Text>
       </group>
-      
-      {/* Interactive hover effect */}
-      <Plane 
-        args={[dimensions.width, dimensions.height]} 
-        position={[0, 0, 0.01]}
-        visible={false}
-      >
-        <meshStandardMaterial transparent opacity={0} />
-      </Plane>
     </group>
   )
 }

@@ -18,6 +18,7 @@ const App: React.FC = () => {
   const [isVRSupported, setIsVRSupported] = useState(false)
   const [lastProcessedTranscript, setLastProcessedTranscript] = useState('')
   const [audioInitialized, setAudioInitialized] = useState(false)
+  const [currentModel, setCurrentModel] = useState<string>('')
 
   const { 
     isConnected, 
@@ -98,12 +99,29 @@ const App: React.FC = () => {
     return true
   }, [audioInitialized])
 
+  // Handle interrupting TTS
+  const handleInterruptTTS = useCallback(async () => {
+    if (systemState === SystemState.PLAYING_TTS) {
+      console.log('🌟 App: Interrupting TTS and starting listening')
+      await forceStop() // Stop TTS
+      await new Promise(resolve => setTimeout(resolve, 500)) // Brief delay
+      await forceStartListening() // Start listening
+    } else {
+      await forceStartListening()
+    }
+  }, [systemState, forceStop, forceStartListening])
+
   // Handle WebSocket responses from backend
   useEffect(() => {
     if (!socket) return
 
     const handleVoiceResponse = async (response: any) => {
       console.log('🌟 App: Received voice response from backend:', response)
+      
+      // Update current model indicator
+      if (response.data?.model) {
+        setCurrentModel(response.data.model)
+      }
       
       // Add panels if provided
       if (response.data?.panels && Array.isArray(response.data.panels)) {
@@ -314,7 +332,7 @@ const App: React.FC = () => {
         <VoiceInterface 
           isListening={isListening}
           transcript={transcript}
-          onStartListening={forceStartListening}
+          onStartListening={handleInterruptTTS}
           onStopListening={forceStop}
           conversationActive={conversationActive}
           onUserInteraction={handleUserInteraction}
@@ -322,6 +340,24 @@ const App: React.FC = () => {
           isSpeaking={isSpeaking}
           isPlaying={isPlaying}
         />
+
+        {/* Model Indicator */}
+        {currentModel && (
+          <div style={{
+            position: 'fixed',
+            top: '1rem',
+            right: '1rem',
+            padding: '0.5rem 1rem',
+            backgroundColor: 'rgba(32, 128, 141, 0.9)',
+            color: 'var(--paper-white)',
+            borderRadius: '0.25rem',
+            fontSize: '0.875rem',
+            zIndex: 1000,
+            border: '1px solid var(--true-turquoise)'
+          }}>
+            🤖 {currentModel.replace('sonar-', '').replace('-', ' ').toUpperCase()}
+          </div>
+        )}
 
         {/* Diagnostic Overlay - Only on localhost */}
         {window.location.hostname === 'localhost' && (

@@ -188,9 +188,15 @@ class VoiceSystemController {
         await this.audioContext.resume()
       }
       
+      // Check if AudioContext is actually running
+      if (this.audioContext.state !== 'running') {
+        console.warn('VoiceController: ⚠️ AudioContext not running, likely needs user gesture')
+        return false
+      }
+      
       return this.audioContext.state === 'running'
     } catch (error) {
-      console.error('VoiceController: Audio context initialization failed:', error)
+      console.warn('VoiceController: ⚠️ Audio context initialization failed (likely needs user gesture):', error)
       return false
     }
   }
@@ -252,11 +258,14 @@ class VoiceSystemController {
       }
       
       this.recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
-        console.error('VoiceController: ❌ Recognition error:', event.error)
-        this.systemStatus.recognitionActive = false
-        this.systemStatus.errorCount++
-        this.systemStatus.lastError = `Recognition error: ${event.error}`
-        this.onError?.(this.systemStatus.lastError)
+        // Only log actual errors, not "no-speech" which is normal
+        if (event.error !== 'no-speech') {
+          console.error('VoiceController: ❌ Recognition error:', event.error)
+          this.systemStatus.recognitionActive = false
+          this.systemStatus.errorCount++
+          this.systemStatus.lastError = `Recognition error: ${event.error}`
+          this.onError?.(this.systemStatus.lastError)
+        }
       }
       
       this.recognition.onend = () => {
@@ -367,7 +376,11 @@ class VoiceSystemController {
       // Initialize fresh audio context
       const audioReady = await this.initializeAudioContext()
       if (!audioReady) {
-        throw new Error('Audio context not ready')
+        console.warn('VoiceController: ⚠️ Audio not available (likely needs user gesture), skipping TTS playback')
+        // Still wait a reasonable amount of time to simulate TTS duration
+        const estimatedDuration = Math.max(2000, text.length * 50) // ~50ms per character
+        await new Promise(resolve => setTimeout(resolve, estimatedDuration))
+        return
       }
       
       // Generate TTS via WebSocket with retry logic
@@ -386,8 +399,11 @@ class VoiceSystemController {
       await new Promise(resolve => setTimeout(resolve, 1000))
       
     } catch (error) {
-      console.error('VoiceController: ❌ TTS playback failed:', error)
+      console.warn('VoiceController: ⚠️ TTS playback failed, continuing without audio:', error)
       // Don't throw the error, just log it and continue
+      // Wait a reasonable amount of time to simulate TTS duration
+      const estimatedDuration = Math.max(2000, text.length * 50) // ~50ms per character
+      await new Promise(resolve => setTimeout(resolve, estimatedDuration))
     } finally {
       this.systemStatus.ttsGenerating = false
       this.systemStatus.ttsPlaying = false
@@ -675,8 +691,14 @@ class VoiceSystemController {
         }
         
         this.recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
-          console.error('VoiceController: ❌ Recognition error:', event.error)
-          this.onError?.(`Recognition error: ${event.error}`)
+          // Only log actual errors, not "no-speech" which is normal
+          if (event.error !== 'no-speech') {
+            console.error('VoiceController: ❌ Recognition error:', event.error)
+            this.systemStatus.recognitionActive = false
+            this.systemStatus.errorCount++
+            this.systemStatus.lastError = `Recognition error: ${event.error}`
+            this.onError?.(this.systemStatus.lastError)
+          }
         }
         
         this.recognition.onend = () => {
