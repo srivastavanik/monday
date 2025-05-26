@@ -200,6 +200,13 @@ class VoiceSystemController {
   private async ensureRecognitionActive(): Promise<boolean> {
     console.log('VoiceController: 🔄 Ensuring recognition active...')
     
+    // Check if audio is actually playing
+    const isAudioPlaying = this.audioContext?.state === 'running' && this.systemStatus.ttsPlaying
+    if (isAudioPlaying) {
+      console.log('VoiceController: ⏸️ Recognition paused while audio is playing')
+      return false
+    }
+    
     // 1. ALWAYS create fresh recognition instance
     if (this.recognition) {
       const fixes = this.getBrowserSpecificFixes()
@@ -237,6 +244,12 @@ class VoiceSystemController {
       }
       
       this.recognition.onresult = (event: SpeechRecognitionEvent) => {
+        // Don't process results if TTS is playing
+        if (this.systemStatus.ttsPlaying) {
+          console.log('VoiceController: ⏸️ Ignoring speech input while TTS is playing')
+          return
+        }
+
         let finalTranscript = ''
         for (let i = event.resultIndex; i < event.results.length; i++) {
           if (event.results[i].isFinal) {
@@ -341,7 +354,20 @@ class VoiceSystemController {
     }
     
     this.systemStatus.ttsGenerating = true
+    this.systemStatus.ttsPlaying = true  // Set TTS playing flag
     this.allAudioBuffers = []
+    
+    // Pause recognition while TTS is playing
+    if (this.recognition) {
+      const fixes = this.getBrowserSpecificFixes()
+      try {
+        fixes.abortMethod(this.recognition)
+        this.recognition = null
+        this.systemStatus.recognitionActive = false
+      } catch (e) {
+        console.log('VoiceController: Ignoring cleanup error:', e)
+      }
+    }
     
     try {
       // Initialize audio context
@@ -364,7 +390,7 @@ class VoiceSystemController {
       
     } finally {
       this.systemStatus.ttsGenerating = false
-      this.systemStatus.ttsPlaying = false
+      this.systemStatus.ttsPlaying = false  // Clear TTS playing flag
       this.allAudioBuffers = []
       if (this.ttsWebSocket) {
         this.ttsWebSocket.close()
@@ -491,6 +517,9 @@ class VoiceSystemController {
     if (remainingTime > 0) {
       await new Promise(resolve => setTimeout(resolve, remainingTime))
     }
+
+    // Add a small delay after TTS to prevent immediate feedback
+    await new Promise(resolve => setTimeout(resolve, 500))
     
     return totalDuration
   }
