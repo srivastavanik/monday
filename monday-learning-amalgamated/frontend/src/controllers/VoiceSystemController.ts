@@ -248,10 +248,17 @@ class VoiceSystemController {
           console.log('VoiceController: 🎤 Final transcript:', finalTranscript)
           this.currentTranscript = finalTranscript
           this.onTranscriptChange?.(finalTranscript)
+          this.updateLastTransition()
         }
       }
       
       this.recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
+        // Ignore 'aborted' errors as they are expected during state transitions
+        if (event.error === 'aborted') {
+          console.log('VoiceController: ℹ️ Recognition aborted (expected during state transition)')
+          return
+        }
+        
         console.error('VoiceController: ❌ Recognition error:', event.error)
         this.systemStatus.recognitionActive = false
         this.systemStatus.errorCount++
@@ -372,20 +379,26 @@ class VoiceSystemController {
       
       this.ttsWebSocket = new WebSocket(wsUrl)
       let hasFinished = false
+      let hasReceivedAudio = false
       
       this.ttsWebSocket.onopen = () => {
         console.log('VoiceController: 🔗 TTS WebSocket connected')
-        this.ttsWebSocket!.send(JSON.stringify({
-          text: ' ',
-          voice_settings: { 
-            stability: this.ttsConfig.stability, 
-            similarity_boost: this.ttsConfig.similarityBoost, 
-            speed: this.ttsConfig.speed 
-          },
-          xi_api_key: this.ttsConfig.apiKey
-        }))
-        this.ttsWebSocket!.send(JSON.stringify({ text: text + ' ', try_trigger_generation: true }))
-        this.ttsWebSocket!.send(JSON.stringify({ text: '' }))
+        try {
+          this.ttsWebSocket!.send(JSON.stringify({
+            text: ' ',
+            voice_settings: { 
+              stability: this.ttsConfig.stability, 
+              similarity_boost: this.ttsConfig.similarityBoost, 
+              speed: this.ttsConfig.speed 
+            },
+            xi_api_key: this.ttsConfig.apiKey
+          }))
+          this.ttsWebSocket!.send(JSON.stringify({ text: text + ' ', try_trigger_generation: true }))
+          this.ttsWebSocket!.send(JSON.stringify({ text: '' }))
+        } catch (error) {
+          console.error('VoiceController: ❌ Error sending TTS data:', error)
+          reject(new Error('Failed to send TTS data'))
+        }
       }
       
       this.ttsWebSocket.onmessage = (event) => {
@@ -393,6 +406,7 @@ class VoiceSystemController {
           const data = JSON.parse(event.data)
           
           if (data.audio) {
+            hasReceivedAudio = true
             const audioBuffer = this.base64ToArrayBuffer(data.audio)
             this.allAudioBuffers.push(audioBuffer)
           }
@@ -400,16 +414,21 @@ class VoiceSystemController {
           if (data.isFinal === true) {
             console.log(`VoiceController: ✅ TTS generation complete. ${this.allAudioBuffers.length} chunks received`)
             hasFinished = true
-            resolve()
+            if (hasReceivedAudio) {
+              resolve()
+            } else {
+              reject(new Error('TTS generation completed but no audio was received'))
+            }
           }
         } catch (err) {
           console.error('VoiceController: ❌ TTS message processing error:', err)
+          reject(new Error('Failed to process TTS response'))
         }
       }
       
       this.ttsWebSocket.onerror = (event) => {
         console.error('VoiceController: ❌ TTS WebSocket error:', event)
-        reject(new Error('TTS WebSocket error'))
+        reject(new Error('TTS WebSocket connection error'))
       }
       
       this.ttsWebSocket.onclose = (event) => {
@@ -417,8 +436,12 @@ class VoiceSystemController {
         if (!hasFinished) {
           if (event.code === 1008 || event.reason.includes('quota')) {
             reject(new Error(`ElevenLabs API Error: ${event.reason}`))
+          } else if (hasReceivedAudio) {
+            // If we received some audio before the connection closed, consider it a success
+            console.log('VoiceController: ℹ️ WebSocket closed after receiving audio, proceeding with playback')
+            resolve()
           } else {
-            reject(new Error('TTS WebSocket closed prematurely'))
+            reject(new Error('TTS WebSocket closed before receiving audio'))
           }
         }
       }
@@ -489,6 +512,7 @@ class VoiceSystemController {
       console.log(`VoiceController: 🔄 Transitioning ${this.state} → ${newState}`)
       const oldState = this.state
       this.state = newState
+      this.updateLastTransition()
       this.onStateChange?.(this.state)
       
       await action()
@@ -592,6 +616,12 @@ class VoiceSystemController {
         }
         
         this.recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
+          // Ignore 'aborted' errors as they are expected during state transitions
+          if (event.error === 'aborted') {
+            console.log('VoiceController: ℹ️ Recognition aborted (expected during state transition)')
+            return
+          }
+          
           console.error('VoiceController: ❌ Recognition error:', event.error)
           this.onError?.(`Recognition error: ${event.error}`)
         }
