@@ -20,6 +20,7 @@ const App: React.FC = () => {
   const [lastProcessedTranscript, setLastProcessedTranscript] = useState('')
   const [audioInitialized, setAudioInitialized] = useState(false)
   const [currentModel, setCurrentModel] = useState<string>('')
+  const [isProcessingReasoning, setIsProcessingReasoning] = useState(false)
   const [staticPanelData, setStaticPanelData] = useState<{
     isVisible: boolean
     title: string
@@ -42,6 +43,7 @@ const App: React.FC = () => {
     addPanel,
     setActivePanel,
     setConversationActive,
+    updatePanel,
     panels
   } = useMondayStore()
 
@@ -263,68 +265,285 @@ const App: React.FC = () => {
     const handleReasoningProgress = async (data: any) => {
       console.log('🔄 App: Reasoning progress update:', data)
       
-      // Update static panel with final reasoning result when complete
-      if (data.update?.type === 'complete' && data.update?.progress === 100) {
-        console.log('🔓 App: Reasoning completed, updating static panel with final result')
-        
-        // Extract and clean the final reasoning content
-        let finalContent = data.update?.reasoning || 'Reasoning process completed'
+      // Set processing flag when reasoning starts
+      if (data.update?.progress === 10 && !isProcessingReasoning) {
+        setIsProcessingReasoning(true)
+        console.log('🧠 App: Started reasoning process')
+      }
+      
+      // Update static panel with real-time reasoning content (but don't trigger TTS during progress)
+      if (data.update?.reasoning && data.update?.type !== 'complete') {
+        let cleanContent = data.update.reasoning
         
         // Clean up the reasoning content for display
+        if (cleanContent.startsWith('<think>')) {
+          const thinkMatch = cleanContent.match(/<think>([\s\S]*?)<\/think>/);
+          if (thinkMatch) {
+            cleanContent = thinkMatch[1].trim()
+          } else {
+            // Remove opening <think> tag if no closing tag yet (streaming in progress)
+            cleanContent = cleanContent.replace(/^<think>\s*/g, '').trim()
+          }
+        }
+        
+        // PARAGRAPH-LEVEL ROTATION: Show the latest complete paragraph
+        let displayContent = cleanContent
+        if (cleanContent.length > 0) {
+          // Split into paragraphs (double newlines or single newlines with substantial content)
+          const paragraphs = cleanContent.split(/\n\s*\n|\n(?=[A-Z])/g).filter((p: string) => p.trim().length > 50)
+          
+          if (paragraphs.length > 0) {
+            // Show the latest paragraph, or last 2 paragraphs if they're short
+            if (paragraphs.length === 1) {
+              displayContent = paragraphs[0].trim()
+            } else if (paragraphs.length >= 2) {
+              const lastTwo = paragraphs.slice(-2).join('\n\n').trim()
+              // If the combined length is reasonable, show both, otherwise just the latest
+              displayContent = lastTwo.length > 800 ? paragraphs[paragraphs.length - 1].trim() : lastTwo
+            }
+            
+            // Add indicator if there are more paragraphs
+            if (paragraphs.length > 2) {
+              displayContent = `[Continuing analysis...]\n\n${displayContent}`
+            }
+          }
+        }
+        
+        // Ensure we have meaningful content to display
+        if (displayContent.length > 10) {
+          // Update static panel with paragraph-level reasoning content
+          setStaticPanelData({
+            isVisible: true,
+            title: `Monday's Reasoning Process (${data.update.progress || 0}% complete)`,
+            content: displayContent,
+            citations: [],
+            model: data.model || 'sonar-reasoning-pro'
+          })
+          
+          console.log('🔄 App: Updated static panel with paragraph-level reasoning:', {
+            progress: data.update.progress,
+            originalLength: cleanContent.length,
+            paragraphCount: cleanContent.split(/\n\s*\n|\n(?=[A-Z])/g).filter((p: string) => p.trim().length > 50).length,
+            displayLength: displayContent.length,
+            isComplete: data.update.type === 'complete'
+          })
+        }
+      }
+      
+      // Update the reasoning panel in the store if it exists
+      if (data.update?.reasoning && panels.length >= 2) {
+        const reasoningPanel = panels.find(p => p.type === 'reasoning')
+        if (reasoningPanel) {
+          let cleanContent = data.update.reasoning
+          if (cleanContent.startsWith('<think>')) {
+            const thinkMatch = cleanContent.match(/<think>([\s\S]*?)<\/think>/);
+            if (thinkMatch) {
+              cleanContent = thinkMatch[1].trim()
+            } else {
+              cleanContent = cleanContent.replace(/^<think>\s*/g, '').trim()
+            }
+          }
+          
+          updatePanel(reasoningPanel.id, {
+            content: cleanContent,
+            fullContent: data.update.reasoning,
+            title: `Reasoning Process (${data.update.progress || 0}% complete)`
+          })
+        }
+      }
+      
+      // When reasoning is complete, show FULL FINAL RESPONSE and provide substantial TTS (ONLY ONCE)
+      if (data.update?.type === 'complete' && data.update?.progress === 100 && isProcessingReasoning) {
+        console.log('🔓 App: Reasoning completed, displaying full final response')
+        setIsProcessingReasoning(false) // Reset processing flag
+        
+        // Get the complete final reasoning content
+        let finalContent = data.update.reasoning || ''
         if (finalContent.startsWith('<think>')) {
           const thinkMatch = finalContent.match(/<think>([\s\S]*?)<\/think>/);
           if (thinkMatch) {
             finalContent = thinkMatch[1].trim()
           } else {
-            finalContent = finalContent.replace(/<think>\s*/g, '').trim()
+            finalContent = finalContent.replace(/^<think>\s*/g, '').trim()
           }
         }
         
-        // Update static panel with final reasoning result
+        // Display the COMPLETE final response in the static panel
         setStaticPanelData({
           isVisible: true,
-          title: 'Monday\'s Reasoning Process - Complete',
-          content: finalContent,
+          title: 'Monday\'s Complete Reasoning Analysis ✅',
+          content: finalContent, // FULL CONTENT, not a summary
           citations: [],
           model: data.model || 'sonar-reasoning-pro'
         })
         
-        try {
-          await unlockMicrophoneAfterProcess()
-        } catch (error) {
-          console.error('🔓 App: Failed to unlock microphone after reasoning:', error)
+        // Create substantial TTS content that explains the key insights
+        let substantialTTS = ''
+        if (finalContent.length > 100) {
+          // Extract the main points for a substantial spoken explanation
+          const paragraphs = finalContent.split(/\n\s*\n|\n(?=[A-Z])/g).filter((p: string) => p.trim().length > 30)
+          
+          if (paragraphs.length >= 2) {
+            // Create a substantial explanation from the first few paragraphs
+            const keyInsights = paragraphs.slice(0, 2).join(' ').trim()
+            const firstSentences = keyInsights.split(/[.!?]+/).slice(0, 4).join('. ').trim()
+            substantialTTS = `I've completed my reasoning analysis. Here's what I found: ${firstSentences}. The complete analysis is now displayed for you to explore in detail.`
+          } else if (paragraphs.length === 1) {
+            // Use the single paragraph but make it more conversational
+            const sentences = paragraphs[0].split(/[.!?]+/).filter((s: string) => s.trim().length > 10).slice(0, 3)
+            substantialTTS = `I've finished thinking through this step by step. ${sentences.join('. ')}. You can see my complete reasoning process in the panel.`
+          } else {
+            // Fallback for edge cases
+            const sentences = finalContent.split(/[.!?]+/).filter((s: string) => s.trim().length > 15).slice(0, 3)
+            substantialTTS = `I've completed my analysis. ${sentences.join('. ')}. The full reasoning is available for you to review.`
+          }
+        } else {
+          substantialTTS = `I've completed my reasoning analysis. The full thought process is now available for you to explore in the panel.`
         }
-      } else {
-        console.log('🔇 App: Reasoning in progress, microphone remains locked')
+        
+        console.log('🎯 App: Displaying complete final response with substantial TTS:', {
+          finalContentLength: finalContent.length,
+          ttsLength: substantialTTS.length,
+          ttsPreview: substantialTTS.substring(0, 100)
+        })
+        
+        // Trigger substantial TTS (ONLY ONCE)
+        try {
+          await handleTTSResponse(substantialTTS)
+        } catch (error) {
+          console.error('🔊 App: Failed to play substantial TTS:', error)
+        }
+        
+        // Unlock microphone after a delay to allow TTS to complete
+        setTimeout(async () => {
+          try {
+            await unlockMicrophoneAfterProcess()
+          } catch (error) {
+            console.error('🔓 App: Failed to unlock microphone after reasoning:', error)
+          }
+        }, 4000) // Longer delay for substantial TTS
       }
     }
 
     const handleResearchProgress = async (data: any) => {
       console.log('🔍 App: Research progress update:', data)
       
-      // Update static panel with final research result when complete
-      if (data.update?.type === 'complete' && data.update?.progress === 100) {
-        console.log('🔓 App: Research completed, updating static panel with final result')
+      // Update static panel with real-time research content
+      if (data.update?.reasoning) {
+        // PARAGRAPH-LEVEL ROTATION: Show the latest complete paragraph
+        let displayContent = data.update.reasoning
+        if (data.update.reasoning.length > 0) {
+          // Split into paragraphs (double newlines or single newlines with substantial content)
+          const paragraphs = data.update.reasoning.split(/\n\s*\n|\n(?=[A-Z])/g).filter((p: string) => p.trim().length > 50)
+          
+          if (paragraphs.length > 0) {
+            // Show the latest paragraph, or last 2 paragraphs if they're short
+            if (paragraphs.length === 1) {
+              displayContent = paragraphs[0].trim()
+            } else if (paragraphs.length >= 2) {
+              const lastTwo = paragraphs.slice(-2).join('\n\n').trim()
+              // If the combined length is reasonable, show both, otherwise just the latest
+              displayContent = lastTwo.length > 800 ? paragraphs[paragraphs.length - 1].trim() : lastTwo
+            }
+            
+            // Add indicator if there are more paragraphs
+            if (paragraphs.length > 2) {
+              displayContent = `[Continuing research...]\n\n${displayContent}`
+            }
+          }
+        }
         
-        // Extract the final research content
-        let finalContent = data.update?.reasoning || 'Research process completed'
-        
-        // Update static panel with final research result
+        // Update static panel with paragraph-level research content
         setStaticPanelData({
           isVisible: true,
-          title: 'Monday\'s Research Analysis - Complete',
-          content: finalContent,
+          title: `Monday's Research Analysis (${data.update.progress || 0}% complete)`,
+          content: displayContent,
           citations: data.update?.sources || [],
           model: data.model || 'sonar-deep-research'
         })
         
-        try {
-          await unlockMicrophoneAfterProcess()
-        } catch (error) {
-          console.error('🔓 App: Failed to unlock microphone after research:', error)
+        console.log('🔍 App: Updated static panel with paragraph-level research:', {
+          progress: data.update.progress,
+          originalLength: data.update.reasoning.length,
+          paragraphCount: data.update.reasoning.split(/\n\s*\n|\n(?=[A-Z])/g).filter((p: string) => p.trim().length > 50).length,
+          displayLength: displayContent.length,
+          isComplete: data.update.type === 'complete'
+        })
+      }
+      
+      // Update the research panel in the store if it exists
+      if (data.update?.reasoning && panels.length >= 2) {
+        const researchPanel = panels.find(p => p.type === 'reasoning')
+        if (researchPanel) {
+          updatePanel(researchPanel.id, {
+            content: data.update.reasoning,
+            fullContent: data.update.reasoning,
+            title: `Research Analysis (${data.update.progress || 0}% complete)`
+          })
         }
-      } else {
-        console.log('🔇 App: Research in progress, microphone remains locked')
+      }
+      
+      // When research is complete, show FULL FINAL RESPONSE and provide substantial TTS
+      if (data.update?.type === 'complete' && data.update?.progress === 100) {
+        console.log('🔓 App: Research completed, displaying full final response')
+        
+        // Get the complete final research content
+        const finalContent = data.update?.reasoning || ''
+        
+        // Display the COMPLETE final response in the static panel
+        setStaticPanelData({
+          isVisible: true,
+          title: 'Monday's Complete Research Analysis ✅',
+          content: finalContent, // FULL CONTENT, not a summary
+          citations: data.update?.sources || [],
+          model: data.model || 'sonar-deep-research'
+        })
+        
+        // Create substantial TTS content that explains the key research findings
+        let substantialTTS = ''
+        if (finalContent.length > 100) {
+          // Extract the main research findings for a substantial spoken explanation
+          const paragraphs = finalContent.split(/\n\s*\n|\n(?=[A-Z])/g).filter((p: string) => p.trim().length > 30)
+          
+          if (paragraphs.length >= 2) {
+            // Create a substantial explanation from the first few paragraphs
+            const keyFindings = paragraphs.slice(0, 2).join(' ').trim()
+            const firstSentences = keyFindings.split(/[.!?]+/).slice(0, 4).join('. ').trim()
+            substantialTTS = `I've completed my comprehensive research analysis. Here are the key findings: ${firstSentences}. The complete research with sources is now displayed for you to explore in detail.`
+          } else if (paragraphs.length === 1) {
+            // Use the single paragraph but make it more conversational
+            const sentences = paragraphs[0].split(/[.!?]+/).filter((s: string) => s.trim().length > 10).slice(0, 3)
+            substantialTTS = `I've finished researching this topic thoroughly. ${sentences.join('. ')}. You can see my complete research analysis with sources in the panel.`
+          } else {
+            // Fallback for edge cases
+            const sentences = finalContent.split(/[.!?]+/).filter((s: string) => s.trim().length > 15).slice(0, 3)
+            substantialTTS = `I've completed my research analysis. ${sentences.join('. ')}. The full research findings with sources are available for you to review.`
+          }
+        } else {
+          substantialTTS = `I've completed my research analysis. The full research findings with sources are now available for you to explore in the panel.`
+        }
+        
+        console.log('🎯 App: Displaying complete research response with substantial TTS:', {
+          finalContentLength: finalContent.length,
+          ttsLength: substantialTTS.length,
+          ttsPreview: substantialTTS.substring(0, 100)
+        })
+        
+        // Trigger substantial TTS
+        try {
+          await handleTTSResponse(substantialTTS)
+        } catch (error) {
+          console.error('🔊 App: Failed to play substantial research TTS:', error)
+        }
+        
+        // Unlock microphone after a delay to allow TTS to complete
+        setTimeout(async () => {
+          try {
+            await unlockMicrophoneAfterProcess()
+          } catch (error) {
+            console.error('🔓 App: Failed to unlock microphone after research:', error)
+          }
+        }, 3000) // Longer delay for substantial TTS
       }
     }
 
@@ -339,7 +558,7 @@ const App: React.FC = () => {
       socket.off('reasoning_progress', handleReasoningProgress)
       socket.off('research_progress', handleResearchProgress)
     }
-  }, [socket, handleTTSResponse, addPanel, setActivePanel])
+  }, [socket, handleTTSResponse, addPanel, setActivePanel, updatePanel, panels, unlockMicrophoneAfterProcess])
 
   // Performance monitoring
   const { fps, frameTime, memoryUsage } = usePerformanceMonitor()
@@ -397,11 +616,27 @@ const App: React.FC = () => {
     const isExplicitTrigger = normalizedCommand.includes('hey monday')
     const shouldProcess = isExplicitTrigger || conversationActive
     
+    // CRITICAL: Filter out Monday's own voice to prevent feedback loops
+    const isMondayVoice = normalizedCommand.includes('think through') || 
+                         normalizedCommand.includes('machine learning algorithms step by step') ||
+                         normalizedCommand.includes('break down think about') ||
+                         normalizedCommand.includes('analyze the different aspects') ||
+                         normalizedCommand.includes('completed my reasoning analysis') ||
+                         normalizedCommand.includes('here\'s what i found')
+    
+    if (isMondayVoice) {
+      console.log('🚫 App: Filtering out Monday\'s own voice to prevent feedback loop:', {
+        command: normalizedCommand.substring(0, 50)
+      })
+      return
+    }
+    
     console.log('🌟 App: Command filtering:', {
       command: normalizedCommand.substring(0, 50),
       isExplicitTrigger,
       conversationActive,
-      shouldProcess
+      shouldProcess,
+      isMondayVoice
     })
 
     if (shouldProcess) {
