@@ -7,6 +7,7 @@ import SpatialOrchestrator from './components/SpatialOrchestrator'
 import LoadingOverlay from './components/LoadingOverlay'
 import ErrorBoundary from './components/ErrorBoundary'
 import DiagnosticOverlay from './components/DiagnosticOverlay'
+import StaticInfoPanel from './components/StaticInfoPanel'
 import { useMondayStore } from './store/mondayStore'
 import { useVoiceSystem } from './hooks/useVoiceSystem'
 import { useWebSocketConnection } from './hooks/useWebSocket'
@@ -19,6 +20,19 @@ const App: React.FC = () => {
   const [lastProcessedTranscript, setLastProcessedTranscript] = useState('')
   const [audioInitialized, setAudioInitialized] = useState(false)
   const [currentModel, setCurrentModel] = useState<string>('')
+  const [staticPanelData, setStaticPanelData] = useState<{
+    isVisible: boolean
+    title: string
+    content: string
+    citations: any[]
+    model: string
+  }>({
+    isVisible: false,
+    title: '',
+    content: '',
+    citations: [],
+    model: ''
+  })
 
   const { 
     isConnected, 
@@ -70,7 +84,8 @@ const App: React.FC = () => {
     handleTTSResponse,
     emergencyReset,
     forceStartListening,
-    forceStop
+    forceStop,
+    interruptTTS
   } = useVoiceSystem({
     onError: (error) => {
       console.error('🌟 App: Voice system error:', error)
@@ -103,13 +118,11 @@ const App: React.FC = () => {
   const handleInterruptTTS = useCallback(async () => {
     if (systemState === SystemState.PLAYING_TTS) {
       console.log('🌟 App: Interrupting TTS and starting listening')
-      await forceStop() // Stop TTS
-      await new Promise(resolve => setTimeout(resolve, 500)) // Brief delay
-      await forceStartListening() // Start listening
+      await interruptTTS() // Use the new interrupt method
     } else {
       await forceStartListening()
     }
-  }, [systemState, forceStop, forceStartListening])
+  }, [systemState, interruptTTS, forceStartListening])
 
   // Handle WebSocket responses from backend
   useEffect(() => {
@@ -121,6 +134,28 @@ const App: React.FC = () => {
       // Update current model indicator
       if (response.data?.model) {
         setCurrentModel(response.data.model)
+      }
+      
+      // Update static panel with full response content
+      if (response.data?.panels && Array.isArray(response.data.panels) && response.data.panels.length > 0) {
+        const mainPanel = response.data.panels[0] // Use the first panel as the main content
+        
+        // Use fullContent if available, otherwise fall back to content
+        // This ensures we show the complete API response, not the TTS intro
+        let displayContent = mainPanel.content || 'No content available'
+        
+        // If there's fullContent available, use that instead (this is the complete API response)
+        if (mainPanel.fullContent && mainPanel.fullContent !== mainPanel.content) {
+          displayContent = mainPanel.fullContent
+        }
+        
+        setStaticPanelData({
+          isVisible: true,
+          title: mainPanel.title || 'Monday Response',
+          content: displayContent,
+          citations: response.data.citations || mainPanel.citations || [],
+          model: response.data.model || 'sonar'
+        })
       }
       
       // Add panels if provided
@@ -491,7 +526,7 @@ const App: React.FC = () => {
             }} />
           )}
           {systemState === SystemState.ACTIVE_LISTENING ? '🎤 Listening' :
-           systemState === SystemState.PLAYING_TTS ? '🔊 Speaking' :
+           systemState === SystemState.PLAYING_TTS ? '🔊 Speaking (Mic Muted)' :
            systemState === SystemState.PROCESSING_COMMAND ? '⚙️ Processing' :
            systemState === SystemState.RESETTING ? '🔄 Resetting' :
            systemState === SystemState.ERROR ? '❌ Error' :
@@ -619,6 +654,52 @@ const App: React.FC = () => {
             </div>
           </div>
         )}
+
+        {/* Microphone Muted Indicator */}
+        {systemState === SystemState.PLAYING_TTS && (
+          <div style={{
+            position: 'fixed',
+            top: '50%',
+            left: '20px',
+            transform: 'translateY(-50%)',
+            padding: '1rem',
+            backgroundColor: '#ff6600',
+            color: 'var(--paper-white)',
+            borderRadius: '0.5rem',
+            fontSize: '0.875rem',
+            zIndex: 1001,
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.5rem',
+            border: '2px solid #ff8800',
+            boxShadow: '0 4px 12px rgba(255, 102, 0, 0.3)'
+          }}>
+            <div style={{
+              width: '12px',
+              height: '12px',
+              backgroundColor: 'var(--paper-white)',
+              borderRadius: '50%',
+              animation: 'pulse 1s ease-in-out infinite'
+            }} />
+            <div>
+              <div style={{ fontWeight: 'bold' }}>🔇 Microphone Muted</div>
+              <div style={{ fontSize: '0.75rem', opacity: 0.9 }}>
+                Preventing feedback during speech
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Static Information Panel */}
+        <StaticInfoPanel
+          id="main-response"
+          title={staticPanelData.title}
+          content={staticPanelData.content}
+          citations={staticPanelData.citations}
+          model={staticPanelData.model}
+          isVisible={staticPanelData.isVisible}
+          onClose={() => setStaticPanelData(prev => ({ ...prev, isVisible: false }))}
+        />
       </div>
     </ErrorBoundary>
   )

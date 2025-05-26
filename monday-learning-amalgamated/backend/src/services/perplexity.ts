@@ -260,14 +260,12 @@ Educational Focus:
     const result = await this.makeRequest('/chat/completions', requestData)
     
     const fullContent = result.choices?.[0]?.message?.content || 'No response generated'
-    const sentences = fullContent.split(/[.!?]+/).filter(s => s.trim().length > 0)
-    const ttsContent = sentences.slice(0, 2).join('. ').trim()
-    const finalTtsContent = ttsContent.endsWith('.') ? ttsContent : ttsContent + '.'
+    const shortResponse = this.createShortTTSResponse(fullContent, query)
     
     return {
       id: result.id || 'reasoning_query',
       model: result.model || 'sonar-reasoning-pro',
-      content: finalTtsContent,
+      content: shortResponse,
       fullContent: fullContent,
       citations: this.extractCitations(result),
       reasoning: this.extractReasoningSteps(fullContent),
@@ -319,14 +317,12 @@ Voice-Friendly Delivery:
     const result = await this.makeRequest('/chat/completions', requestData)
     
     const fullContent = result.choices?.[0]?.message?.content || 'No response generated'
-    const sentences = fullContent.split(/[.!?]+/).filter(s => s.trim().length > 0)
-    const ttsContent = sentences.slice(0, 2).join('. ').trim()
-    const finalTtsContent = ttsContent.endsWith('.') ? ttsContent : ttsContent + '.'
+    const shortResponse = this.createShortTTSResponse(fullContent, query)
     
     return {
       id: result.id || 'research_query',
       model: result.model || 'sonar-deep-research',
-      content: finalTtsContent,
+      content: shortResponse,
       fullContent: fullContent,
       citations: this.extractCitations(result),
       sources: this.extractSources(result),
@@ -398,21 +394,34 @@ Voice-Friendly Delivery:
   }
 
   private createShortTTSResponse(fullContent: string, query: string): string {
-    // Extract first 1-2 sentences for TTS
+    // Create a proper introductory sentence for TTS that doesn't cut off
     const sentences = fullContent.split(/[.!?]+/).filter(s => s.trim().length > 0)
-    let shortResponse = sentences.slice(0, 2).join('. ').trim()
     
-    // Ensure it ends with punctuation
-    if (!shortResponse.endsWith('.') && !shortResponse.endsWith('!') && !shortResponse.endsWith('?')) {
-      shortResponse += '.'
+    if (sentences.length === 0) {
+      return "I found some information about that topic for you."
     }
     
-    // If too long, truncate to ~150 characters
-    if (shortResponse.length > 150) {
-      shortResponse = shortResponse.substring(0, 147) + '...'
+    // Take the first complete sentence and ensure it's a good TTS intro
+    let firstSentence = sentences[0].trim()
+    
+    // If the first sentence is too long (>120 chars), create a custom intro
+    if (firstSentence.length > 120) {
+      // Extract key topic from the query for a personalized intro
+      const cleanQuery = query.replace(/^(hey monday,?\s*)/i, '').trim()
+      if (cleanQuery.length > 0) {
+        return `I found some great information about ${cleanQuery}. Let me share what I discovered.`
+      } else {
+        return "I found some interesting information to share with you."
+      }
     }
     
-    return shortResponse
+    // Ensure the sentence ends properly
+    if (!firstSentence.endsWith('.') && !firstSentence.endsWith('!') && !firstSentence.endsWith('?')) {
+      firstSentence += '.'
+    }
+    
+    // Add a connecting phrase to indicate there's more detail in the panel
+    return `${firstSentence} I've gathered more details for you to explore.`
   }
 
   async processQuery(queryData: PerplexityQuery): Promise<PerplexityResponse> {

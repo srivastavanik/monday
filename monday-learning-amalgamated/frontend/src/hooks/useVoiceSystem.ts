@@ -22,6 +22,7 @@ interface UseVoiceSystemReturn {
   handleCommand: (command: string) => Promise<void>
   handleTTSResponse: (text: string) => Promise<void>
   emergencyReset: () => Promise<void>
+  interruptTTS: () => Promise<void>
   
   // Manual overrides (for fallback UI)
   forceStartListening: () => Promise<void>
@@ -172,6 +173,18 @@ export const useVoiceSystem = (options: UseVoiceSystemOptions = {}): UseVoiceSys
     }
   }, [])
 
+  const interruptTTS = useCallback(async () => {
+    console.log('VoiceSystem: 🚨 Interrupt TTS triggered...')
+    if (controllerRef.current) {
+      try {
+        await controllerRef.current.interruptTTS()
+      } catch (err: any) {
+        console.error('VoiceSystem: ❌ Interrupt TTS failed:', err)
+        setError(`Interrupt TTS failed: ${err.message}`)
+      }
+    }
+  }, [])
+
   // Manual overrides for fallback UI
   const forceStartListening = useCallback(async () => {
     console.log('VoiceSystem: 🎯 Force start listening (manual override)...')
@@ -219,6 +232,7 @@ export const useVoiceSystem = (options: UseVoiceSystemOptions = {}): UseVoiceSys
     handleCommand,
     handleTTSResponse,
     emergencyReset,
+    interruptTTS,
     
     // Manual overrides
     forceStartListening,

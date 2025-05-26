@@ -476,10 +476,12 @@ function createSpatialPanels(response: any, mode: string, query: string, model: 
     rotation: [0, 0, 0],
     title: mode === 'greeting' ? 'Welcome to Monday' : `${mode.charAt(0).toUpperCase() + mode.slice(1)}: ${query.substring(0, 50)}${query.length > 50 ? '...' : ''}`,
     content: panelContent,
+    fullContent: response.fullContent, // Include the full content separately
     isActive: true,
     opacity: 1,
     createdAt: Date.now(),
-    model: model // Add model info to panel
+    model: model, // Add model info to panel
+    citations: response.citations || [] // Include citations in the panel
   });
   
   // Citations panel if available

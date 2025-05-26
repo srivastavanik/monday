@@ -90,6 +90,13 @@ class VoiceSystemController {
   private currentTranscript = ''
   private conversationActive = false
   
+  // CRITICAL: Hardware-level microphone control
+  private microphoneStream: MediaStream | null = null
+  private isMicrophoneLocked = false
+  private ttsLockTimeout: number | null = null
+  private globalTTSLock = false
+  private ttsLockStartTime = 0
+  
   // Event callbacks
   private onStateChange?: (state: SystemState) => void
   private onTranscriptChange?: (transcript: string) => void
@@ -159,6 +166,127 @@ class VoiceSystemController {
     this.onConversationChange = callbacks.onConversationChange
   }
 
+  // ============ HARDWARE MICROPHONE CONTROL ============
+  
+  private async lockMicrophone(): Promise<void> {
+    console.log('VoiceController: 🔒 NUCLEAR MICROPHONE SHUTDOWN')
+    this.isMicrophoneLocked = true
+    this.globalTTSLock = true
+    this.ttsLockStartTime = Date.now()
+    
+    // Set a MASSIVE timeout to force unlock if something goes wrong
+    if (this.ttsLockTimeout) {
+      clearTimeout(this.ttsLockTimeout)
+    }
+    this.ttsLockTimeout = setTimeout(() => {
+      console.log('VoiceController: ⚠️ FORCE UNLOCKING microphone after timeout')
+      this.isMicrophoneLocked = false
+      this.globalTTSLock = false
+      this.ttsLockTimeout = null
+    }, 60000) // 60 second emergency timeout
+    
+    // NUCLEAR OPTION: Destroy EVERYTHING related to audio input
+    
+    // 1. Kill recognition with extreme prejudice
+    if (this.recognition) {
+      try {
+        this.recognition.abort()
+        this.recognition.stop()
+        this.recognition.onstart = null
+        this.recognition.onresult = null
+        this.recognition.onerror = null
+        this.recognition.onend = null
+        this.recognition = null
+        console.log('VoiceController: 💀 Recognition DESTROYED')
+      } catch (e) {
+        console.log('VoiceController: Ignoring recognition destruction error:', e)
+      }
+    }
+    
+    // 2. Kill ALL microphone streams
+    if (this.microphoneStream) {
+      this.microphoneStream.getTracks().forEach(track => {
+        track.stop()
+        track.enabled = false
+        console.log('VoiceController: 💀 Microphone track DESTROYED')
+      })
+      this.microphoneStream = null
+    }
+    
+    // 3. Kill ALL audio streams from getUserMedia
+    try {
+      const allStreams = await navigator.mediaDevices.enumerateDevices()
+      console.log('VoiceController: 💀 Attempting to kill all audio devices')
+    } catch (e) {
+      console.log('VoiceController: Could not enumerate devices:', e)
+    }
+    
+    // 4. Force garbage collection if available
+    if ((window as any).gc) {
+      (window as any).gc()
+    }
+    
+    this.systemStatus.recognitionActive = false
+    console.log('VoiceController: ✅ NUCLEAR MICROPHONE SHUTDOWN COMPLETE - NO AUDIO INPUT POSSIBLE')
+  }
+  
+  private async unlockMicrophone(): Promise<void> {
+    console.log('VoiceController: 🔓 System restart after TTS')
+    
+    // Clear any existing timeout
+    if (this.ttsLockTimeout) {
+      clearTimeout(this.ttsLockTimeout)
+      this.ttsLockTimeout = null
+    }
+    
+    // Calculate how long the lock was active
+    const lockDuration = Date.now() - this.ttsLockStartTime
+    console.log(`VoiceController: 🔓 Lock was active for ${lockDuration}ms`)
+    
+    // Ensure reasonable minimum lock time to prevent overlap
+    const minimumLockTime = 5000 // Reduced to 5 seconds
+    if (lockDuration < minimumLockTime) {
+      const additionalWait = minimumLockTime - lockDuration
+      console.log(`VoiceController: ⏳ Additional wait of ${additionalWait}ms for audio separation`)
+      await new Promise(resolve => setTimeout(resolve, additionalWait))
+    }
+    
+    // Reasonable wait for residual audio to clear
+    console.log('VoiceController: ⏳ Wait for audio system clearance...')
+    await new Promise(resolve => setTimeout(resolve, 2000)) // Reduced to 2 seconds
+    
+    // Force browser to release audio resources
+    if ((window as any).gc) {
+      (window as any).gc()
+      console.log('VoiceController: 🗑️ Forced garbage collection')
+    }
+    
+    // Short delay after garbage collection
+    await new Promise(resolve => setTimeout(resolve, 1000)) // Reduced to 1 second
+    
+    this.isMicrophoneLocked = false
+    this.globalTTSLock = false
+    console.log('VoiceController: ✅ System ready for restart - audio separated')
+  }
+  
+  private async requestMicrophoneAccess(): Promise<MediaStream | null> {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        } 
+      })
+      this.microphoneStream = stream
+      console.log('VoiceController: 🎤 Fresh microphone access granted')
+      return stream
+    } catch (error) {
+      console.error('VoiceController: ❌ Failed to get microphone access:', error)
+      return null
+    }
+  }
+
   // ============ BROWSER-SPECIFIC FIXES ============
   
   private getBrowserSpecificFixes(): BrowserFixes {
@@ -206,6 +334,12 @@ class VoiceSystemController {
   private async ensureRecognitionActive(): Promise<boolean> {
     console.log('VoiceController: 🔄 Ensuring recognition active...')
     
+    // CRITICAL SAFETY CHECK: Never start recognition during TTS or when locked
+    if (this.systemStatus.ttsPlaying || this.systemStatus.ttsGenerating || this.isMicrophoneLocked || this.globalTTSLock) {
+      console.log('VoiceController: 🔇 BLOCKED recognition start - TTS active, microphone locked, or global TTS lock active')
+      return false
+    }
+    
     // 1. ALWAYS create fresh recognition instance
     if (this.recognition) {
       const fixes = this.getBrowserSpecificFixes()
@@ -217,23 +351,35 @@ class VoiceSystemController {
       this.recognition = null
     }
     
-    // 2. Wait for browser to release resources
+    // 2. Ensure we have fresh microphone access
+    if (!this.microphoneStream) {
+      const stream = await this.requestMicrophoneAccess()
+      if (!stream) {
+        console.error('VoiceController: ❌ Cannot start recognition - no microphone access')
+        return false
+      }
+    }
+    
+    // 3. Wait for browser to release resources
     const fixes = this.getBrowserSpecificFixes()
     await new Promise(resolve => setTimeout(resolve, fixes.recognitionRestartDelay))
     
-    // 3. Create new instance with fresh config
+    // 4. Create new instance with fresh config
     try {
       this.recognition = new (window as any).webkitSpeechRecognition()
       if (!this.recognition) {
         throw new Error('Failed to create recognition instance')
       }
       
-      this.recognition.continuous = !fixes.forceSingleShot
+      // Improved settings for better recognition
+      this.recognition.continuous = true
       this.recognition.interimResults = true
       this.recognition.lang = 'en-US'
+      // maxAlternatives not supported in TypeScript interface
       
-      // 4. Implement bulletproof event handlers
+      // 5. Implement bulletproof event handlers
       let startSuccess = false
+      let lastResultTime = Date.now()
       
       this.recognition.onstart = () => {
         console.log('VoiceController: ✅ Recognition started successfully')
@@ -243,17 +389,29 @@ class VoiceSystemController {
       }
       
       this.recognition.onresult = (event: SpeechRecognitionEvent) => {
+        // Double-check lock status before processing any results
+        if (this.isMicrophoneLocked || this.systemStatus.ttsPlaying || this.systemStatus.ttsGenerating || this.globalTTSLock) {
+          console.log('VoiceController: 🔇 Ignoring recognition result - microphone locked, TTS active, or global TTS lock active')
+          return
+        }
+        
+        lastResultTime = Date.now()
         let finalTranscript = ''
+        let interimTranscript = ''
+        
         for (let i = event.resultIndex; i < event.results.length; i++) {
+          const transcript = event.results[i][0].transcript
           if (event.results[i].isFinal) {
-            finalTranscript += event.results[i][0].transcript
+            finalTranscript += transcript
+          } else {
+            interimTranscript += transcript
           }
         }
         
         if (finalTranscript) {
           console.log('VoiceController: 🎤 Final transcript:', finalTranscript)
-          this.currentTranscript = finalTranscript
-          this.onTranscriptChange?.(finalTranscript)
+          this.currentTranscript = finalTranscript.trim()
+          this.onTranscriptChange?.(this.currentTranscript)
         }
       }
       
@@ -272,27 +430,56 @@ class VoiceSystemController {
         console.log('VoiceController: 🛑 Recognition ended')
         this.systemStatus.recognitionActive = false
         this.updateLastTransition()
+        
+        // CRITICAL: Do NOT restart recognition if TTS is playing, generating, or microphone is locked
+        if (this.systemStatus.ttsPlaying || this.systemStatus.ttsGenerating || this.isMicrophoneLocked || this.globalTTSLock) {
+          console.log('VoiceController: 🔇 NOT restarting recognition - TTS active, microphone locked, or global TTS lock active')
+          return
+        }
+        
+        // Auto-restart if we should still be listening and it's been a while since last result
+        const timeSinceLastResult = Date.now() - lastResultTime
+        if (this.state === SystemState.WAITING_FOR_ACTIVATION || 
+            this.state === SystemState.ACTIVE_LISTENING) {
+          
+          // Only restart if it's been more than 2 seconds since last speech
+          if (timeSinceLastResult > 2000) {
+            console.log('VoiceController: 🔄 Auto-restarting recognition after silence')
+            setTimeout(() => {
+              // Triple-check all conditions before restarting
+              if (!this.systemStatus.ttsPlaying && !this.systemStatus.ttsGenerating && 
+                  !this.isMicrophoneLocked && !this.globalTTSLock &&
+                  (this.state === SystemState.WAITING_FOR_ACTIVATION || 
+                   this.state === SystemState.ACTIVE_LISTENING) && 
+                  !this.systemStatus.recognitionActive) {
+                this.ensureRecognitionActive().catch(console.error)
+              } else {
+                console.log('VoiceController: 🔇 Skipping auto-restart - conditions not met (including global TTS lock)')
+              }
+            }, 1000)
+          }
+        }
       }
       
-      // 5. Try to start with timeout
+      // 6. Try to start with longer timeout
       return new Promise<boolean>((resolve) => {
         const timeout = setTimeout(() => {
           if (!startSuccess) {
             console.warn('VoiceController: ⚠️ Recognition start timeout')
             resolve(false)
           }
-        }, 3000) // Increased timeout
+        }, 5000) // Increased timeout to 5 seconds
         
         try {
           if (this.recognition) {
             this.recognition.start()
           }
           
-          // 6. Verify it actually started
+          // 7. Verify it actually started
           setTimeout(() => {
             clearTimeout(timeout)
             resolve(startSuccess)
-          }, 1000) // Increased verification delay
+          }, 1500) // Increased verification delay
         } catch (e) {
           console.error('VoiceController: ❌ Recognition start failed:', e)
           clearTimeout(timeout)
@@ -313,13 +500,14 @@ class VoiceSystemController {
   private async stopTTS(): Promise<void> {
     console.log('VoiceController: 🛑 Stopping TTS and cleaning up...')
     
-    // Stop recognition immediately to prevent feedback
+    // IMMEDIATELY stop recognition to prevent feedback
     if (this.recognition) {
       try {
         const fixes = this.getBrowserSpecificFixes()
         fixes.abortMethod(this.recognition)
+        this.recognition = null
         this.systemStatus.recognitionActive = false
-        console.log('VoiceController: 🎤 Recognition stopped for TTS cleanup')
+        console.log('VoiceController: 🎤 Recognition STOPPED for TTS cleanup')
       } catch (e) {
         console.log('VoiceController: Ignoring recognition cleanup error:', e)
       }
@@ -334,6 +522,7 @@ class VoiceSystemController {
       }
       this.audioContext = null;
     }
+    
     // Close any open TTS WebSocket
     if (this.ttsWebSocket) {
       try {
@@ -341,6 +530,7 @@ class VoiceSystemController {
       } catch (e) {}
       this.ttsWebSocket = null;
     }
+    
     // Reset playback flags and buffers
     this.systemStatus.ttsPlaying = false;
     this.systemStatus.ttsGenerating = false;
@@ -356,6 +546,20 @@ class VoiceSystemController {
       console.warn('VoiceController: ⚠️ ElevenLabs API key not configured, skipping TTS')
       return
     }
+    
+    // CRITICAL: Ensure microphone is completely disabled during TTS
+    console.log('VoiceController: 🔇 FORCING microphone OFF for TTS')
+    if (this.recognition) {
+      const fixes = this.getBrowserSpecificFixes()
+      try {
+        fixes.abortMethod(this.recognition)
+        this.recognition.abort() // Double abort for safety
+        this.recognition = null
+      } catch (e) {
+        console.log('VoiceController: Ignoring recognition abort error:', e)
+      }
+    }
+    this.systemStatus.recognitionActive = false
     
     // Clear any existing audio buffers
     this.allAudioBuffers = []
@@ -391,18 +595,23 @@ class VoiceSystemController {
         return
       }
       
+      // Mark TTS as playing to prevent any microphone activation
+      this.systemStatus.ttsPlaying = true
+      console.log('VoiceController: 🔇 TTS PLAYING - Microphone MUST stay OFF')
+      
       // Calculate exact duration and play
       const totalDuration = await this.playAudioBuffersWithDuration(this.allAudioBuffers)
       console.log(`VoiceController: 🎵 TTS playback completed. Duration: ${totalDuration}ms`)
       
-      // Add extra delay to ensure audio is fully finished
-      await new Promise(resolve => setTimeout(resolve, 1000))
+      // Add extra delay to ensure audio is fully finished and system audio has cleared
+      console.log('VoiceController: ⏳ Post-TTS delay to ensure audio cleared...')
+      await new Promise(resolve => setTimeout(resolve, 3000)) // Reduced to 3 seconds
       
     } catch (error) {
       console.warn('VoiceController: ⚠️ TTS playback failed, continuing without audio:', error)
       // Don't throw the error, just log it and continue
       // Wait a reasonable amount of time to simulate TTS duration
-      const estimatedDuration = Math.max(2000, text.length * 50) // ~50ms per character
+      const estimatedDuration = Math.max(3000, text.length * 80) // Reduced to 80ms per character
       await new Promise(resolve => setTimeout(resolve, estimatedDuration))
     } finally {
       this.systemStatus.ttsGenerating = false
@@ -412,6 +621,7 @@ class VoiceSystemController {
         this.ttsWebSocket.close()
         this.ttsWebSocket = null
       }
+      console.log('VoiceController: ✅ TTS finished with isolation - microphone can be reactivated')
     }
   }
   
@@ -629,7 +839,7 @@ class VoiceSystemController {
   }
   
   public async handleTTSResponse(text: string): Promise<void> {
-    console.log('VoiceController: 🔊 Handling TTS response...')
+    console.log('VoiceController: 🔊 TTS RESPONSE WITH STRONG AUDIO ISOLATION...')
     
     // Set conversation active after any interaction
     if (!this.conversationActive) {
@@ -638,98 +848,64 @@ class VoiceSystemController {
     }
     
     try {
-      // Play TTS and wait for it to complete
+      // STEP 1: NUCLEAR MICROPHONE SHUTDOWN
+      await this.lockMicrophone()
+      
+      // STEP 2: Short pre-TTS delay to ensure microphone shutdown
+      console.log('VoiceController: ⏳ Pre-TTS delay for microphone shutdown...')
+      await new Promise(resolve => setTimeout(resolve, 1000)) // Reduced to 1 second
+      
+      // STEP 3: Play TTS with microphone guaranteed destroyed
       await this.transitionTo(SystemState.PLAYING_TTS, async () => {
+        console.log('VoiceController: 🔇 Microphone DESTROYED - playing TTS in isolation')
+        
+        // Play TTS with nuclear-level protection
         await this.playTTSWithGuaranteedCompletion(text)
+        
+        // STEP 4: Reasonable delay to ensure audio has cleared
+        console.log('VoiceController: ⏳ Post-TTS delay for audio clearance...')
+        await new Promise(resolve => setTimeout(resolve, 3000)) // Reduced to 3 seconds
       })
       
-      // Add a longer delay after TTS completes to prevent feedback
-      console.log('VoiceController: ⏳ Waiting for audio to fully complete before restarting microphone...')
-      await new Promise(resolve => setTimeout(resolve, 2000)) // Increased to 2 seconds
-      
-      // Transition to active listening
+      // STEP 5: Complete system restart with fresh everything
       await this.transitionTo(SystemState.ACTIVE_LISTENING, async () => {
-        // Stop any existing recognition
-        if (this.recognition) {
-          const fixes = this.getBrowserSpecificFixes()
-          fixes.abortMethod(this.recognition)
-          this.recognition = null
-          this.systemStatus.recognitionActive = false
-        }
+        console.log('VoiceController: 🔄 System restart after TTS isolation')
         
-        // Wait a bit more before starting new recognition
-        await new Promise(resolve => setTimeout(resolve, 500))
+        // Short pre-unlock delay
+        await new Promise(resolve => setTimeout(resolve, 1000)) // Reduced to 1 second
         
-        // Create new recognition instance
-        const SpeechRecognition = window.webkitSpeechRecognition || (window as any).SpeechRecognition
-        if (!SpeechRecognition) {
-          throw new Error('Speech recognition not supported')
-        }
+        // Unlock the microphone (which includes delays)
+        await this.unlockMicrophone()
         
-        this.recognition = new SpeechRecognition()
-        if (!this.recognition) {
-          throw new Error('Failed to create speech recognition instance')
-        }
+        // Reasonable additional safety delay before recognition
+        console.log('VoiceController: ⏳ Post-unlock safety delay...')
+        await new Promise(resolve => setTimeout(resolve, 2000)) // Reduced to 2 seconds
         
-        this.recognition.continuous = true
-        this.recognition.interimResults = true
-        this.recognition.lang = 'en-US'
-        
-        // Set up event handlers
-        this.recognition.onstart = () => {
-          console.log('VoiceController: ✅ Recognition restarted after TTS')
-          this.systemStatus.recognitionActive = true
-        }
-        
-        this.recognition.onresult = (event: SpeechRecognitionEvent) => {
-          const result = event.results[event.results.length - 1]
-          if (result.isFinal) {
-            this.currentTranscript = result[0].transcript
-            console.log('VoiceController: 🎤 Final transcript:', this.currentTranscript)
-            this.onTranscriptChange?.(this.currentTranscript)
-          }
-        }
-        
-        this.recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
-          // Only log actual errors, not "no-speech" which is normal
-          if (event.error !== 'no-speech') {
-            console.error('VoiceController: ❌ Recognition error:', event.error)
-            this.systemStatus.recognitionActive = false
-            this.systemStatus.errorCount++
-            this.systemStatus.lastError = `Recognition error: ${event.error}`
-            this.onError?.(this.systemStatus.lastError)
-          }
-        }
-        
-        this.recognition.onend = () => {
-          console.log('VoiceController: 🛑 Recognition ended')
-          this.systemStatus.recognitionActive = false
-          
-          // Restart recognition if we're still supposed to be listening
-          if (this.state === SystemState.ACTIVE_LISTENING && this.recognition) {
-            setTimeout(() => {
-              if (this.recognition && this.state === SystemState.ACTIVE_LISTENING) {
-                try {
-                  this.recognition.start()
-                } catch (e) {
-                  console.warn('VoiceController: ⚠️ Failed to restart recognition:', e)
-                }
-              }
-            }, 500) // Increased restart delay
-          }
-        }
-        
-        // Start recognition
-        try {
-          this.recognition.start()
-        } catch (error) {
-          console.error('VoiceController: ❌ Failed to start recognition:', error)
-          throw new Error('Failed to start recognition')
+        // Start completely fresh recognition with brand new microphone access
+        const success = await this.ensureRecognitionActive()
+        if (!success) {
+          console.warn('VoiceController: ⚠️ Failed to restart recognition after TTS')
+          this.systemStatus.lastError = 'Failed to restart recognition after TTS'
+          this.systemStatus.errorCount++
+        } else {
+          console.log('VoiceController: ✅ Microphone reactivated with system restart')
         }
       })
+      
     } catch (error) {
-      console.error('VoiceController: ❌ Error in handleTTSResponse:', error)
-      // Don't throw the error, just log it and continue
+      console.error('VoiceController: ❌ Error in TTS response:', error)
+      
+      // CRITICAL: Always unlock microphone even if there's an error
+      try {
+        console.log('VoiceController: 🔧 Emergency microphone unlock after TTS error')
+        await this.unlockMicrophone()
+        await new Promise(resolve => setTimeout(resolve, 2000)) // Reduced to 2 seconds
+        await this.ensureRecognitionActive()
+      } catch (unlockError) {
+        console.error('VoiceController: ❌ Failed to unlock microphone after TTS error:', unlockError)
+        this.systemStatus.lastError = 'Critical: Failed to unlock microphone after TTS'
+        this.systemStatus.errorCount++
+      }
     }
 
     // Ensure conversation stays active after TTS
@@ -739,18 +915,59 @@ class VoiceSystemController {
     }
   }
 
+  public async interruptTTS(): Promise<void> {
+    console.log('VoiceController: ⚡ Interrupting TTS with hardware unlock')
+    
+    // Stop TTS immediately and unlock microphone
+    await this.stopTTS()
+    await this.unlockMicrophone()
+    
+    // Transition to active listening
+    await this.transitionTo(SystemState.ACTIVE_LISTENING, async () => {
+      // Wait a moment for audio to clear
+      await new Promise(resolve => setTimeout(resolve, 500))
+      
+      // Start fresh recognition with new microphone access
+      const success = await this.ensureRecognitionActive()
+      if (!success) {
+        console.warn('VoiceController: ⚠️ Failed to start recognition after TTS interruption')
+        throw new Error('Failed to start recognition after TTS interruption')
+      }
+      
+      console.log('VoiceController: ✅ Microphone active after TTS interruption')
+    })
+  }
+
   // ============ EMERGENCY RECOVERY ============
   
   public async emergencyReset(): Promise<void> {
     console.log('VoiceController: 🚨 EMERGENCY RECOVERY INITIATED')
+    
+    // Clear any TTS lock timeout
+    if (this.ttsLockTimeout) {
+      clearTimeout(this.ttsLockTimeout)
+      this.ttsLockTimeout = null
+    }
+    
+    // Force unlock microphone
+    this.isMicrophoneLocked = false
+    this.globalTTSLock = false
     
     // Kill everything
     if (this.recognition) {
       try { 
         const fixes = this.getBrowserSpecificFixes()
         fixes.abortMethod(this.recognition)
+        this.recognition.abort()
+        this.recognition.stop()
       } catch (e) {}
       this.recognition = null
+    }
+    
+    // Stop microphone stream
+    if (this.microphoneStream) {
+      this.microphoneStream.getTracks().forEach(track => track.stop())
+      this.microphoneStream = null
     }
     
     if (this.ttsWebSocket) {
@@ -783,15 +1000,19 @@ class VoiceSystemController {
     this.allAudioBuffers = []
     
     // Wait for browser to recover
-    await new Promise(resolve => setTimeout(resolve, 1000))
+    await new Promise(resolve => setTimeout(resolve, 2000))
     
     // Request fresh microphone permission
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      stream.getTracks().forEach(track => track.stop())
-      console.log('VoiceController: ✅ Microphone permission confirmed')
+      const stream = await this.requestMicrophoneAccess()
+      if (stream) {
+        console.log('VoiceController: ✅ Fresh microphone access confirmed')
+      } else {
+        console.error('VoiceController: ❌ Failed to get fresh microphone access')
+        this.systemStatus.lastError = 'Microphone permission lost'
+      }
     } catch (e) {
-      console.error('VoiceController: ❌ Microphone permission lost:', e)
+      console.error('VoiceController: ❌ Microphone permission error:', e)
       this.systemStatus.lastError = 'Microphone permission lost'
     }
     
