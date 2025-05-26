@@ -31,6 +31,7 @@ export interface PerplexityResponse {
   content: string
   fullContent?: string
   thinkingProcess?: string
+  finalPreview?: string
   citations?: Citation[]
   reasoning?: ReasoningStep[]
   sources?: Source[]
@@ -160,6 +161,11 @@ class PerplexityService {
   private apiKey: string
   private readonly baseUrl: string = 'https://api.perplexity.ai'
   private conversationHistory: string[] = []
+  private lastRequestTime: number = 0
+  private requestCount: number = 0
+  private readonly MIN_REQUEST_INTERVAL = 2000 // 2 seconds between requests
+  private readonly MAX_REQUESTS_PER_MINUTE = 20 // Limit to 20 requests per minute
+  private requestTimes: number[] = []
   private systemPrompt = `You are Monday, an advanced AI learning companion for VR education, powered by Perplexity Sonar.
 
 Core Identity:
@@ -191,6 +197,35 @@ Response Guidelines:
   }
 
   private async makeRequest(endpoint: string, data: any): Promise<any> {
+    // RATE LIMITING: Check if we're making too many requests
+    const now = Date.now()
+    
+    // Remove requests older than 1 minute
+    this.requestTimes = this.requestTimes.filter(time => now - time < 60000)
+    
+    // Check if we've exceeded the rate limit
+    if (this.requestTimes.length >= this.MAX_REQUESTS_PER_MINUTE) {
+      const oldestRequest = Math.min(...this.requestTimes)
+      const waitTime = 60000 - (now - oldestRequest)
+      console.warn(`[RATE LIMIT] Too many requests. Waiting ${waitTime}ms before next request.`)
+      await new Promise(resolve => setTimeout(resolve, waitTime))
+    }
+    
+    // Check minimum interval between requests
+    const timeSinceLastRequest = now - this.lastRequestTime
+    if (timeSinceLastRequest < this.MIN_REQUEST_INTERVAL) {
+      const waitTime = this.MIN_REQUEST_INTERVAL - timeSinceLastRequest
+      console.log(`[RATE LIMIT] Waiting ${waitTime}ms to maintain minimum interval.`)
+      await new Promise(resolve => setTimeout(resolve, waitTime))
+    }
+    
+    // Record this request
+    this.requestTimes.push(Date.now())
+    this.lastRequestTime = Date.now()
+    this.requestCount++
+    
+    console.log(`[RATE LIMIT] Request #${this.requestCount}, ${this.requestTimes.length} requests in last minute`)
+    
     const startTime = Date.now()
     
     // Ensure endpoint starts with /
@@ -265,7 +300,8 @@ Response Guidelines:
       console.log('[DEBUG] Making streaming request to Perplexity API:', {
         fullUrl: fullUrl,
         model: data.model,
-        streaming: data.stream
+        streaming: data.stream,
+        maxTokens: data.max_tokens
       })
 
       const response = await fetch(fullUrl, {
@@ -279,7 +315,13 @@ Response Guidelines:
       })
 
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+        const errorText = await response.text()
+        console.error('[DEBUG] Streaming request failed:', {
+          status: response.status,
+          statusText: response.statusText,
+          errorText: errorText
+        })
+        throw new Error(`HTTP ${response.status}: ${response.statusText} - ${errorText}`)
       }
 
       if (!response.body) {
@@ -292,12 +334,16 @@ Response Guidelines:
       let buffer = ''
       let progressCount = 0
       let lastProgressUpdate = 0
+      let isComplete = false
 
       try {
         while (true) {
           const { done, value } = await reader.read()
           
-          if (done) break
+          if (done) {
+            console.log('[DEBUG] Streaming completed, final content length:', fullContent.length)
+            break
+          }
 
           buffer += decoder.decode(value, { stream: true })
           const lines = buffer.split('\n')
@@ -307,7 +353,11 @@ Response Guidelines:
             if (line.trim() === '') continue
             if (line.startsWith('data: ')) {
               const sseData = line.slice(6)
-              if (sseData === '[DONE]') continue
+              if (sseData === '[DONE]') {
+                console.log('[DEBUG] Received [DONE] signal, content length:', fullContent.length)
+                isComplete = true
+                continue
+              }
 
               try {
                 const parsed = JSON.parse(sseData)
@@ -317,10 +367,10 @@ Response Guidelines:
                   fullContent += delta
                   progressCount++
 
-                  // THROTTLED progress updates - only send every 10 chunks AND at least 2 seconds apart
+                  // IMPROVED progress updates - send every 3 chunks AND at least 800ms apart
                   const now = Date.now()
-                  if (progressCallback && progressCount % 10 === 0 && (now - lastProgressUpdate) >= 2000) {
-                    const progress = Math.min(85, Math.floor(progressCount / 2)) // Slower progress, cap at 85%
+                  if (progressCallback && progressCount % 3 === 0 && (now - lastProgressUpdate) >= 800) {
+                    const progress = Math.min(85, Math.floor(progressCount * 2)) // Moderate progress, cap at 85%
                     
                     let updateType: ProgressUpdate['type'] = 'thinking'
                     let message = 'Processing your request...'
@@ -333,12 +383,12 @@ Response Guidelines:
                       message = 'Gathering information from multiple sources...'
                     }
 
-                    console.log(`[DEBUG] Sending throttled progress update: ${progress}% (chunk ${progressCount})`)
+                    console.log(`[DEBUG] Sending progress update: ${progress}% (chunk ${progressCount}, content: ${fullContent.length} chars)`)
                     progressCallback({
                       type: updateType,
                       message: message,
                       progress: progress,
-                      reasoning: fullContent.substring(0, 300) + (fullContent.length > 300 ? '...' : '')
+                      reasoning: fullContent // Send full content for real-time display
                     })
                     
                     lastProgressUpdate = now
@@ -354,9 +404,16 @@ Response Guidelines:
         reader.releaseLock()
       }
 
-      // Send completion update
+      // Ensure we have complete content
+      console.log('[DEBUG] Final content check:', {
+        contentLength: fullContent.length,
+        isComplete: isComplete,
+        lastChars: fullContent.slice(-50)
+      })
+
+      // Send completion update with full content
       if (progressCallback) {
-        console.log('[DEBUG] Sending completion update')
+        console.log('[DEBUG] Sending completion update with full content')
         progressCallback({
           type: 'complete',
           message: 'Analysis complete!',
@@ -369,7 +426,8 @@ Response Guidelines:
       console.log('[DEBUG] Streaming request completed:', {
         responseTime: `${responseTime}ms`,
         contentLength: fullContent.length,
-        totalChunks: progressCount
+        totalChunks: progressCount,
+        isComplete: isComplete
       })
 
       // Return in expected format
@@ -421,7 +479,7 @@ Response Guidelines:
       const response = await this.makeRequest('/chat/completions', {
         model: 'sonar',
         messages: messages,
-        max_tokens: 300,
+        max_tokens: 150, // REDUCED from 300 to prevent excessive costs
         temperature: 0.7,
         top_p: 0.9,
         stream: false
@@ -469,12 +527,14 @@ Response Format:
 - Present 3-5 clear reasoning steps
 - Each step should be conversational and TTS-friendly
 - End with synthesis and suggestions for further exploration
-- Keep total response under 500 tokens for voice delivery
+- IMPORTANT: Always complete your thoughts - don't leave sentences unfinished
+- Structure your response to fit within the token limit while being complete
 
 Educational Focus:
 - Help users understand not just what, but why and how
 - Encourage critical thinking
-- Make complex topics approachable`;
+- Make complex topics approachable
+- Ensure every response has a clear conclusion`;
 
     messages.push({
       role: 'system',
@@ -530,7 +590,7 @@ Educational Focus:
     const requestData = {
       model: 'sonar-reasoning-pro',
       messages: messages,
-      max_tokens: 500,
+      max_tokens: 600, // INCREASED from 400 to ensure complete responses
       temperature: 0.2,
       stream: true // Enable streaming for progressive display
     };
@@ -560,14 +620,68 @@ Educational Focus:
       
       const fullContent = result.choices?.[0]?.message?.content || 'No response generated';
       
+      // Check if content appears to be truncated
+      const seemsTruncated = fullContent.length > 50 && (
+        !fullContent.trim().endsWith('.') && 
+        !fullContent.trim().endsWith('!') && 
+        !fullContent.trim().endsWith('?') &&
+        !fullContent.trim().endsWith('</think>')
+      );
+      
+      if (seemsTruncated) {
+        console.warn('[DEBUG] ⚠️ REASONING CONTENT MAY BE TRUNCATED:', {
+          contentLength: fullContent.length,
+          lastChars: fullContent.slice(-100),
+          tokensUsed: result.usage?.total_tokens || 0,
+          maxTokens: requestData.max_tokens
+        });
+      } else {
+        console.log('[DEBUG] ✅ Reasoning content appears complete:', {
+          contentLength: fullContent.length,
+          tokensUsed: result.usage?.total_tokens || 0,
+          maxTokens: requestData.max_tokens
+        });
+      }
+      
       // Create a thinking message for TTS and main panel
-      const thinkingMessage = `I'm thinking through ${query.replace(/^(please\s+)?think\s+(through\s+|about\s+)?/i, '').trim()} step by step. Let me work through this systematically.`;
+      const topicName = query.replace(/^(please\s+)?think\s+(through\s+|about\s+)?/i, '').trim();
+      const thinkingMessage = `I'm going to think through ${topicName} step by step. Let me break this down systematically and analyze the different aspects, approaches, and key considerations. I'll work through this methodically to give you a comprehensive understanding.`;
+      
+      console.log('🎯 Generated thinking message:', {
+        topicName: topicName,
+        messageLength: thinkingMessage.length,
+        message: thinkingMessage.substring(0, 100)
+      });
+      
+      // Generate a final response preview from the reasoning content
+      let finalPreview = '';
+      if (fullContent && fullContent.length > 100) {
+        // Extract key insights from the reasoning for the preview
+        const cleanReasoning = fullContent.replace(/<think>|<\/think>/g, '').trim();
+        const sentences = cleanReasoning.split(/[.!?]+/).filter(s => s.trim().length > 20);
+        
+        if (sentences.length >= 3) {
+          // Take key sentences and create a summary
+          const keyPoints = sentences.slice(0, 3).map(s => s.trim()).join('. ');
+          finalPreview = `Based on my analysis: ${keyPoints}. I've broken this down into clear steps for you to explore.`;
+        } else {
+          finalPreview = `I've analyzed ${query.replace(/^(please\s+)?think\s+(through\s+|about\s+)?/i, '').trim()} and broken it down into logical steps. The reasoning process reveals key insights about the different approaches and their applications.`;
+        }
+      } else {
+        finalPreview = `I've completed my analysis of ${query.replace(/^(please\s+)?think\s+(through\s+|about\s+)?/i, '').trim()}. The reasoning process is now available for you to review.`;
+      }
+      
+      console.log('🎯 Generated final preview:', {
+        previewLength: finalPreview.length,
+        preview: finalPreview.substring(0, 100)
+      });
       
       return {
         id: result.id || 'reasoning_query',
         model: result.model || 'sonar-reasoning-pro',
         content: thinkingMessage, // Short thinking message for TTS
         fullContent: fullContent, // Full reasoning for progressive display
+        finalPreview: finalPreview, // Final response preview for TTS after completion
         citations: this.extractCitations(result),
         reasoning: this.extractReasoningSteps(fullContent),
         metadata: {
@@ -599,6 +713,15 @@ Research Focus:
 - Focus on most relevant and recent information
 - Keep responses structured but concise
 
+Response Structure:
+- Opening: Brief context and research scope
+- Main findings: 3-4 key insights with source backing
+- Analysis: Critical evaluation and synthesis
+- Implications: Broader significance and applications
+- Conclusion: Summary and further research directions
+- IMPORTANT: Always complete your analysis - don't leave thoughts unfinished
+
+Voice-Friendly Delivery:
 Response Format:
 - Brief context and scope
 - 2-3 key insights with sources
@@ -614,7 +737,8 @@ Style and Delivery:
 - Use clear, flowing language suitable for TTS
 - Break up long sections with natural pauses
 - Avoid excessive technical jargon without explanation
-- Maintain conversational tone despite depth`;
+- Maintain conversational tone despite depth
+- Ensure every response has a clear conclusion`;
 
     messages.push({
       role: 'system',
@@ -704,6 +828,7 @@ Style and Delivery:
     const requestData = {
       model: 'sonar-deep-research',
       messages: messages,
+      max_tokens: 700, // INCREASED from 500 to ensure complete responses
       max_tokens: 1000, // Increased for full research response
       temperature: 0.3,
       stream: true
@@ -725,6 +850,37 @@ Style and Delivery:
       
       const fullContent = result.choices?.[0]?.message?.content || 'No response generated';
       
+      // Check if content appears to be truncated
+      const seemsTruncated = fullContent.length > 50 && (
+        !fullContent.trim().endsWith('.') && 
+        !fullContent.trim().endsWith('!') && 
+        !fullContent.trim().endsWith('?')
+      );
+      
+      if (seemsTruncated) {
+        console.warn('[DEBUG] ⚠️ RESEARCH CONTENT MAY BE TRUNCATED:', {
+          contentLength: fullContent.length,
+          lastChars: fullContent.slice(-100),
+          tokensUsed: result.usage?.total_tokens || 0,
+          maxTokens: requestData.max_tokens
+        });
+      } else {
+        console.log('[DEBUG] ✅ Research content appears complete:', {
+          contentLength: fullContent.length,
+          tokensUsed: result.usage?.total_tokens || 0,
+          maxTokens: requestData.max_tokens
+        });
+      }
+      
+      // Create a research message for TTS and main panel
+      const topicName = query.replace(/^(please\s+)?(research\s+|investigate\s+)?/i, '').trim();
+      const researchMessage = `I'm going to conduct comprehensive research on ${topicName}. Let me gather information from multiple high-quality sources, analyze different perspectives, and synthesize the findings. I'll examine the latest developments, key insights, and provide you with a thorough analysis.`;
+      
+      console.log('🎯 Generated research message:', {
+        topicName: topicName,
+        messageLength: researchMessage.length,
+        message: researchMessage.substring(0, 100)
+      });
       // Extract thinking process and final answer
       const thinkingMatch = fullContent.match(/<think>([\s\S]*?)<\/think>/);
       const thinkingProcess = thinkingMatch ? thinkingMatch[1].trim() : '';

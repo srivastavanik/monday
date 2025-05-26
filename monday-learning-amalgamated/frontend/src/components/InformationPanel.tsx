@@ -2,6 +2,15 @@ import React, { useRef, useMemo } from 'react'
 import { Text, Plane } from '@react-three/drei'
 import { MondayPanel } from '../store/mondayStore'
 
+interface Citation {
+  id: string
+  url: string
+  title: string
+  snippet: string
+  publishedDate?: string
+  domain?: string
+}
+
 interface InformationPanelProps {
   panel: MondayPanel
   isActive: boolean
@@ -35,12 +44,15 @@ const InformationPanel: React.FC<InformationPanelProps> = ({
       reasoning: '#20808D',     // True Turquoise
       research: '#091717',      // Offblack
       visualization: '#20808D', // True Turquoise
-      citations: '#FBFAF4'      // Paper White
+      citations: '#FBFAF4',     // Paper White
+      progressive_reasoning: '#20808D', // True Turquoise
+      progressive_research: '#091717',  // Offblack
+      thinking: '#20808D'       // True Turquoise
     }
     
     return {
-      background: baseColors[panel.type] || baseColors.content,
-      text: panel.type === 'research' ? '#FBFAF4' : '#091717',
+      background: baseColors[panel.type as keyof typeof baseColors] || baseColors.content,
+      text: panel.type === 'research' || panel.type === 'progressive_research' ? '#FBFAF4' : '#091717',
       border: '#20808D',
       glow: isActive ? '#20808D' : 'transparent'
     }
