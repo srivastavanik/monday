@@ -62,8 +62,15 @@ const io = new Server(server, {
 
 const PORT = process.env.PORT || 3001;
 
-// Conversation context storage
-const conversationContexts = new Map<string, string[]>();
+// Conversation context storage - Updated structure
+interface ConversationEntry {
+  role: 'user' | 'assistant';
+  content: string;
+  ttsContent?: string; // Optional TTS version
+  timestamp: number;
+}
+
+const conversationContexts = new Map<string, ConversationEntry[]>();
 const sessionStates = new Map<string, { 
   isInConversation: boolean, 
   lastActivity: number,
@@ -154,15 +161,32 @@ function determineQueryMode(command: string): { mode: string; model: string } {
 }
 
 // Helper function to get conversation context
-function getConversationContext(socketId: string): string[] {
+function getConversationContext(socketId: string): ConversationEntry[] {
   return conversationContexts.get(socketId) || [];
 }
 
 // Helper function to update conversation context
-function updateConversationContext(socketId: string, userInput: string, response: string) {
+function updateConversationContext(
+  socketId: string, 
+  userInput: string, 
+  fullResponse: string,
+  ttsResponse?: string
+) {
   const context = getConversationContext(socketId);
-  context.push(`User: ${userInput}`);
-  context.push(`Monday: ${response}`);
+  
+  // Store full content for API, TTS version for reference
+  context.push({
+    role: 'user',
+    content: userInput,
+    timestamp: Date.now()
+  });
+  
+  context.push({
+    role: 'assistant',
+    content: fullResponse, // FULL response for API context
+    ttsContent: ttsResponse, // Shortened version for TTS
+    timestamp: Date.now()
+  });
   
   // Keep only last 10 exchanges (20 messages) to manage context size
   if (context.length > 20) {
@@ -196,6 +220,37 @@ io.on('connection', (socket) => {
         isInConversation: false, 
         lastActivity: Date.now() 
       };
+      
+      // Check for reset conversation command
+      if (commandLower.includes('reset conversation') || commandLower.includes('start over')) {
+        conversationContexts.delete(socket.id);
+        
+        socket.emit('voice_response', {
+          message: "I've reset our conversation. Let's start fresh! What would you like to explore?",
+          data: {
+            panels: [{
+              id: `panel_${Date.now()}_reset`,
+              type: 'content',
+              position: [0, 1.5, -2],
+              rotation: [0, 0, 0],
+              title: 'Conversation Reset',
+              content: "I've reset our conversation. Let's start fresh! What would you like to explore?",
+              isActive: true,
+              opacity: 1,
+              createdAt: Date.now(),
+              model: 'system'
+            }],
+            mode: 'basic',
+            model: 'system',
+            query: 'reset',
+            citations: [],
+            reasoning: [],
+            metadata: { tokensUsed: 0, responseTime: 0 }
+          }
+        });
+        
+        return;
+      }
       
       // Enhanced activation logic using frontend state
       const isMondayActivation = frontendIsExplicitTrigger || commandLower.includes('hey monday');
@@ -278,7 +333,7 @@ io.on('connection', (socket) => {
             if (determinedMode === 'reasoning') {
               response = await perplexityService.reasoningQuery(responseQuery, getConversationContext(socket.id));
             } else if (determinedMode === 'research') {
-              response = await perplexityService.deepResearch(responseQuery);
+              response = await perplexityService.deepResearch(responseQuery, getConversationContext(socket.id));
             } else {
               response = await perplexityService.basicQuery(responseQuery, {
                 service: 'monday-backend',
@@ -309,7 +364,7 @@ io.on('connection', (socket) => {
           }
 
           // Add to conversation history
-          updateConversationContext(socket.id, command, response.content);
+          updateConversationContext(socket.id, command, response.fullContent || response.content, response.content);
           
           // Create spatial learning panels based on response type
           const panelData = createSpatialPanels(response, determinedMode, responseQuery, model);

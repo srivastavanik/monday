@@ -1,5 +1,13 @@
 import axios from 'axios'
 import { logger } from '../utils/logger.js'
+import { ContextCleaner } from '../utils/contextCleaner.js'
+
+interface ConversationEntry {
+  role: 'user' | 'assistant';
+  content: string;
+  ttsContent?: string;
+  timestamp: number;
+}
 
 export interface PerplexityQuery {
   query: string
@@ -206,11 +214,11 @@ Response Guidelines:
     }
   }
 
-  public async reasoningQuery(query: string, context?: string[]): Promise<PerplexityResponse> {
-    const messages = [
-      {
-        role: 'system',
-        content: `You are Monday, an AI learning companion with advanced reasoning capabilities.
+  public async reasoningQuery(query: string, context?: string[] | ConversationEntry[]): Promise<PerplexityResponse> {
+    const messages: any[] = [];
+    
+    // Add system message
+    const systemPrompt = `You are Monday, an AI learning companion with advanced reasoning capabilities.
 
 Your Reasoning Approach:
 - Break down complex problems into clear, logical steps
@@ -229,60 +237,181 @@ Response Format:
 Educational Focus:
 - Help users understand not just what, but why and how
 - Encourage critical thinking
-- Make complex topics approachable`
+- Make complex topics approachable`;
+
+    messages.push({
+      role: 'system',
+      content: systemPrompt
+    });
+    
+    // Process context with new structure
+    if (context && Array.isArray(context)) {
+      let structuredContext: ConversationEntry[];
+      
+      // Handle both old string format and new ConversationEntry format
+      if (context.length > 0 && typeof context[0] === 'string') {
+        // Convert old string format to new format
+        structuredContext = ContextCleaner.convertLegacyContext(context as string[]);
+      } else {
+        structuredContext = context as ConversationEntry[];
       }
-    ]
-
-    // Add context messages if provided
-    if (context && context.length > 0) {
-      context.forEach(ctx => {
-        messages.push({
-          role: 'assistant',
-          content: ctx
-        })
-      })
+      
+      // Clean the context
+      const cleanedMessages = ContextCleaner.validateAndCleanContext(structuredContext);
+      
+      // Ensure perfect alternation
+      const alternatingMessages = this.ensureAlternation(cleanedMessages);
+      
+      // Add to messages
+      messages.push(...alternatingMessages);
     }
-
-    // Add the user query with reasoning prompt
+    
+    // Add current query
     messages.push({
       role: 'user',
       content: `Please think through this step by step: ${query}`
-    })
-
+    });
+    
+    // Final validation
+    this.validateMessageStructure(messages);
+    
+    // Log for debugging
+    this.logApiRequest('/chat/completions', {
+      model: 'sonar-reasoning-pro',
+      messages: messages
+    });
+    
     const requestData = {
       model: 'sonar-reasoning-pro',
       messages: messages,
       max_tokens: 500,
       temperature: 0.2,
       stream: false
-    }
+    };
 
-    const result = await this.makeRequest('/chat/completions', requestData)
-    
-    const fullContent = result.choices?.[0]?.message?.content || 'No response generated'
-    const shortResponse = this.createShortTTSResponse(fullContent, query)
-    
-    return {
-      id: result.id || 'reasoning_query',
-      model: result.model || 'sonar-reasoning-pro',
-      content: shortResponse,
-      fullContent: fullContent,
-      citations: this.extractCitations(result),
-      reasoning: this.extractReasoningSteps(fullContent),
-      metadata: {
-        tokensUsed: result.usage?.total_tokens || 0,
-        responseTime: 0
-      }
+    try {
+      const result = await this.makeRequest('/chat/completions', requestData);
+      
+      const fullContent = result.choices?.[0]?.message?.content || 'No response generated';
+      const shortResponse = this.createShortTTSResponse(fullContent, query);
+      
+      return {
+        id: result.id || 'reasoning_query',
+        model: result.model || 'sonar-reasoning-pro',
+        content: shortResponse,
+        fullContent: fullContent,
+        citations: this.extractCitations(result),
+        reasoning: this.extractReasoningSteps(fullContent),
+        metadata: {
+          tokensUsed: result.usage?.total_tokens || 0,
+          responseTime: 0
+        }
+      };
+    } catch (error: any) {
+      console.error('Perplexity API Error:', error.response?.data || error.message);
+      throw error;
     }
   }
 
-  public async deepResearch(query: string): Promise<PerplexityResponse> {
-    const requestData = {
-      model: 'sonar-deep-research',
-      messages: [
-        {
-          role: 'system',
-          content: `You are Monday, conducting comprehensive research analysis.
+  private ensureAlternation(messages: Array<{role: string, content: string}>): Array<{role: string, content: string}> {
+    if (messages.length === 0) return [];
+    
+    const result: Array<{role: string, content: string}> = [];
+    let expectedRole: 'user' | 'assistant' = 'user'; // First message after system should be user
+    
+    for (const msg of messages) {
+      if (msg.role === 'system') {
+        continue; // Skip system messages in this logic
+      }
+      
+      if (msg.role === expectedRole) {
+        result.push(msg);
+        // Toggle expected role
+        expectedRole = expectedRole === 'user' ? 'assistant' : 'user';
+      } else {
+        // Wrong role order detected
+        console.warn(`Skipping message with role ${msg.role}, expected ${expectedRole}`);
+        
+        // If we're skipping a user message and next is assistant, we need a placeholder
+        if (msg.role === 'user' && expectedRole === 'assistant') {
+          result.push({
+            role: 'assistant',
+            content: 'I understand.'
+          });
+          expectedRole = 'user';
+        }
+      }
+    }
+    
+    // Ensure we don't end with a user message (API expects assistant response)
+    if (result.length > 0 && result[result.length - 1].role === 'assistant') {
+      result.pop(); // Remove last assistant message to make room for user query
+    }
+    
+    return result;
+  }
+
+  private validateMessageStructure(messages: any[]): void {
+    let lastRole: string | null = null;
+    
+    for (let i = 0; i < messages.length; i++) {
+      const msg = messages[i];
+      
+      // System messages can be at the start
+      if (msg.role === 'system' && i > 0 && messages[i-1].role !== 'system') {
+        throw new Error('System messages must be at the beginning');
+      }
+      
+      // After system messages, roles must alternate
+      if (msg.role !== 'system') {
+        if (lastRole && lastRole !== 'system' && msg.role === lastRole) {
+          throw new Error(`Role alternation violated at index ${i}: ${lastRole} -> ${msg.role}`);
+        }
+        lastRole = msg.role;
+      }
+    }
+    
+    // Must end with user message (the current query)
+    if (messages[messages.length - 1].role !== 'user') {
+      throw new Error('Messages must end with user role');
+    }
+  }
+
+  private logApiRequest(endpoint: string, requestBody: any): void {
+    console.log('\n=== PERPLEXITY API REQUEST ===');
+    console.log('Endpoint:', endpoint);
+    console.log('Model:', requestBody.model);
+    console.log('Message count:', requestBody.messages.length);
+    console.log('Messages:');
+    
+    requestBody.messages.forEach((msg: any, index: number) => {
+      console.log(`[${index}] Role: ${msg.role}, Content: ${msg.content.substring(0, 50)}...`);
+    });
+    
+    // Validate alternation
+    let lastRole = null;
+    let alternationValid = true;
+    
+    for (let i = 0; i < requestBody.messages.length; i++) {
+      const msg = requestBody.messages[i];
+      if (msg.role !== 'system') {
+        if (lastRole && lastRole === msg.role) {
+          console.error(`❌ ALTERNATION ERROR at index ${i}: ${lastRole} -> ${msg.role}`);
+          alternationValid = false;
+        }
+        lastRole = msg.role;
+      }
+    }
+    
+    console.log('Alternation valid:', alternationValid ? '✅' : '❌');
+    console.log('============================\n');
+  }
+
+  public async deepResearch(query: string, context?: string[] | ConversationEntry[]): Promise<PerplexityResponse> {
+    const messages: any[] = [];
+    
+    // Add system message
+    const systemPrompt = `You are Monday, conducting comprehensive research analysis.
 
 Research Methodology:
 - Synthesize information from multiple high-quality sources
@@ -302,34 +431,79 @@ Voice-Friendly Delivery:
 - Use clear, flowing language suitable for TTS
 - Break up long sections with natural pauses
 - Avoid excessive technical jargon without explanation
-- Maintain conversational tone despite depth`
-        },
-        {
-          role: 'user',
-          content: `Conduct a comprehensive research analysis on: ${query}`
-        }
-      ],
+- Maintain conversational tone despite depth`;
+
+    messages.push({
+      role: 'system',
+      content: systemPrompt
+    });
+
+    // Process context with new structure
+    if (context && Array.isArray(context)) {
+      let structuredContext: ConversationEntry[];
+      
+      // Handle both old string format and new ConversationEntry format
+      if (context.length > 0 && typeof context[0] === 'string') {
+        // Convert old string format to new format
+        structuredContext = ContextCleaner.convertLegacyContext(context as string[]);
+      } else {
+        structuredContext = context as ConversationEntry[];
+      }
+      
+      // Clean the context
+      const cleanedMessages = ContextCleaner.validateAndCleanContext(structuredContext);
+      
+      // Ensure perfect alternation
+      const alternatingMessages = this.ensureAlternation(cleanedMessages);
+      
+      // Add to messages
+      messages.push(...alternatingMessages);
+    }
+
+    // Add the user query
+    messages.push({
+      role: 'user',
+      content: `Conduct a comprehensive research analysis on: ${query}`
+    });
+
+    // Final validation
+    this.validateMessageStructure(messages);
+    
+    // Log for debugging
+    this.logApiRequest('/chat/completions', {
+      model: 'sonar-deep-research',
+      messages: messages
+    });
+
+    const requestData = {
+      model: 'sonar-deep-research',
+      messages: messages,
       max_tokens: 800,
       temperature: 0.3,
       stream: false
-    }
+    };
 
-    const result = await this.makeRequest('/chat/completions', requestData)
-    
-    const fullContent = result.choices?.[0]?.message?.content || 'No response generated'
-    const shortResponse = this.createShortTTSResponse(fullContent, query)
-    
-    return {
-      id: result.id || 'research_query',
-      model: result.model || 'sonar-deep-research',
-      content: shortResponse,
-      fullContent: fullContent,
-      citations: this.extractCitations(result),
-      sources: this.extractSources(result),
-      metadata: {
-        tokensUsed: result.usage?.total_tokens || 0,
-        responseTime: 0
-      }
+    try {
+      const result = await this.makeRequest('/chat/completions', requestData);
+      
+      const fullContent = result.choices?.[0]?.message?.content || 'No response generated';
+      const shortResponse = this.createShortTTSResponse(fullContent, query);
+      
+      return {
+        id: result.id || 'research_query',
+        model: result.model || 'sonar-deep-research',
+        content: shortResponse,
+        fullContent: fullContent,
+        citations: this.extractCitations(result),
+        sources: this.extractSources(result),
+        metadata: {
+          tokensUsed: result.usage?.total_tokens || 0,
+          responseTime: 0
+        }
+      };
+    } catch (error: any) {
+      console.error('Perplexity API Error:', error.response?.data || error.message);
+      throw error;
     }
   }
 

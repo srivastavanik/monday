@@ -5,6 +5,9 @@ declare global {
   }
 }
 
+import { CommandValidator, ValidationResult } from './CommandValidator'
+import { VoiceSignatureFilter } from './VoiceSignatureFilter'
+
 interface SpeechRecognition extends EventTarget {
   continuous: boolean
   interimResults: boolean
@@ -108,6 +111,10 @@ class VoiceSystemController {
   private allAudioBuffers: ArrayBuffer[] = []
   private ttsConfig: TTSConfig
   
+  // Command validation system
+  private commandValidator: CommandValidator
+  private voiceSignatureFilter: VoiceSignatureFilter
+  
   // Single source of truth for all states
   private systemStatus: SystemStatus = {
     recognitionActive: false,
@@ -128,6 +135,10 @@ class VoiceSystemController {
       speed: 1.1,
       ...ttsConfig
     }
+    
+    // Initialize command validation system
+    this.commandValidator = new CommandValidator()
+    this.voiceSignatureFilter = new VoiceSignatureFilter()
   }
 
   // ============ STATE MANAGEMENT ============
@@ -388,7 +399,7 @@ class VoiceSystemController {
         this.updateLastTransition()
       }
       
-      this.recognition.onresult = (event: SpeechRecognitionEvent) => {
+      this.recognition.onresult = async (event: SpeechRecognitionEvent) => {
         // Double-check lock status before processing any results
         if (this.isMicrophoneLocked || this.systemStatus.ttsPlaying || this.systemStatus.ttsGenerating || this.globalTTSLock) {
           console.log('VoiceController: 🔇 Ignoring recognition result - microphone locked, TTS active, or global TTS lock active')
@@ -409,21 +420,56 @@ class VoiceSystemController {
         }
         
         if (finalTranscript) {
-          console.log('VoiceController: 🎤 Final transcript:', finalTranscript)
+          console.log('VoiceController: 🎤 Raw transcript received:', finalTranscript)
+          
+          // LAYER 1: Quick voice signature filtering
+          if (this.voiceSignatureFilter.isLikelyMondayResponse(finalTranscript)) {
+            console.log('VoiceController: 🚫 VOICE SIGNATURE FILTER: Detected Monday response pattern')
+            console.log(`VoiceController: 🚫 Rejected by signature filter: "${finalTranscript}"`)
+            return
+          }
+          
+          // LAYER 2: Comprehensive command validation
+          const validation = await this.commandValidator.validateCommand(finalTranscript.trim())
+          
+          if (!validation.valid) {
+            console.log(`VoiceController: 🚫 COMMAND VALIDATOR: ${validation.reason}`)
+            console.log(`VoiceController: 🚫 Rejected by validator: "${finalTranscript}"`)
+            return
+          }
+          
+          // Command passed all validation layers - process it
+          console.log('VoiceController: ✅ Command passed all validation layers, processing:', finalTranscript)
           this.currentTranscript = finalTranscript.trim()
           this.onTranscriptChange?.(this.currentTranscript)
         }
       }
       
       this.recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
-        // Only log actual errors, not "no-speech" which is normal
-        if (event.error !== 'no-speech') {
-          console.error('VoiceController: ❌ Recognition error:', event.error)
-          this.systemStatus.recognitionActive = false
-          this.systemStatus.errorCount++
-          this.systemStatus.lastError = `Recognition error: ${event.error}`
-          this.onError?.(this.systemStatus.lastError)
+        // Handle different types of errors appropriately
+        if (event.error === 'no-speech') {
+          // Normal - just means no speech detected, don't log as error
+          return
         }
+        
+        if (event.error === 'aborted') {
+          // This is expected when we manually stop recognition, don't treat as error
+          console.log('VoiceController: 🔄 Recognition aborted (expected during TTS)')
+          return
+        }
+        
+        if (event.error === 'network') {
+          console.warn('VoiceController: ⚠️ Network error in recognition, will retry')
+          this.systemStatus.recognitionActive = false
+          return
+        }
+        
+        // Only log actual problematic errors
+        console.error('VoiceController: ❌ Recognition error:', event.error)
+        this.systemStatus.recognitionActive = false
+        this.systemStatus.errorCount++
+        this.systemStatus.lastError = `Recognition error: ${event.error}`
+        this.onError?.(this.systemStatus.lastError)
       }
       
       this.recognition.onend = () => {
@@ -442,8 +488,8 @@ class VoiceSystemController {
         if (this.state === SystemState.WAITING_FOR_ACTIVATION || 
             this.state === SystemState.ACTIVE_LISTENING) {
           
-          // Only restart if it's been more than 2 seconds since last speech
-          if (timeSinceLastResult > 2000) {
+          // Only restart if it's been more than 3 seconds since last speech (increased from 2)
+          if (timeSinceLastResult > 3000) {
             console.log('VoiceController: 🔄 Auto-restarting recognition after silence')
             setTimeout(() => {
               // Triple-check all conditions before restarting
@@ -456,7 +502,9 @@ class VoiceSystemController {
               } else {
                 console.log('VoiceController: 🔇 Skipping auto-restart - conditions not met (including global TTS lock)')
               }
-            }, 1000)
+            }, 2000) // Increased delay to 2 seconds for more stability
+          } else {
+            console.log('VoiceController: ⏳ Recognition ended but recent speech detected, not restarting yet')
           }
         }
       }
@@ -841,6 +889,9 @@ class VoiceSystemController {
   public async handleTTSResponse(text: string): Promise<void> {
     console.log('VoiceController: 🔊 TTS RESPONSE WITH STRONG AUDIO ISOLATION...')
     
+    // RECORD TTS OUTPUT for validation against future commands
+    this.commandValidator.recordTTSOutput(text)
+    
     // Set conversation active after any interaction
     if (!this.conversationActive) {
       this.conversationActive = true
@@ -999,6 +1050,10 @@ class VoiceSystemController {
     this.conversationActive = false
     this.allAudioBuffers = []
     
+    // Clear validation history to prevent stale feedback detection
+    this.commandValidator.clearHistory()
+    console.log('VoiceController: 🧹 Cleared validation history during emergency reset')
+    
     // Wait for browser to recover
     await new Promise(resolve => setTimeout(resolve, 2000))
     
@@ -1081,6 +1136,16 @@ class VoiceSystemController {
         }
       }
     }, 5000)
+  }
+
+  // ============ COMMAND VALIDATION ============
+  
+  public getValidationStats(): any {
+    return this.commandValidator.getValidationStats()
+  }
+  
+  public clearValidationHistory(): void {
+    this.commandValidator.clearHistory()
   }
 }
 
