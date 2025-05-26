@@ -461,14 +461,16 @@ console.log('[BACKEND LOG] All setup completed - ready for connections!');
 function createSpatialPanels(response: any, mode: string, query: string): any[] {
   const panels: any[] = [];
   
-  // Main content panel
+  // Main content panel - use fullContent if available, otherwise content
+  const panelContent = response.fullContent || response.content;
+  
   panels.push({
     id: `panel_${Date.now()}_main`,
     type: 'content',
     position: [0, 1.5, -2],
     rotation: [0, 0, 0],
     title: mode === 'greeting' ? 'Welcome to Monday' : `Learning: ${query}`,
-    content: response.content,
+    content: panelContent,
     isActive: true,
     opacity: 1,
     createdAt: Date.now()
@@ -478,12 +480,12 @@ function createSpatialPanels(response: any, mode: string, query: string): any[] 
   if (response.citations && response.citations.length > 0) {
     panels.push({
       id: `panel_${Date.now()}_citations`,
-      type: 'content',
+      type: 'citations',
       position: [2, 1.2, -1.5],
       rotation: [0, -30, 0],
       title: 'Sources & Citations',
       content: response.citations.map((c: any, i: number) => 
-        `${i + 1}. ${c.title}\n${c.snippet}`
+        `${i + 1}. ${c.title}\n${c.snippet || c.text || ''}`
       ).join('\n\n'),
       citations: response.citations,
       isActive: false,

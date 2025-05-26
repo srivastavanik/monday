@@ -12,6 +12,7 @@ export interface PerplexityResponse {
   id: string
   model: string
   content: string
+  fullContent?: string
   citations?: Citation[]
   reasoning?: ReasoningStep[]
   sources?: Source[]
@@ -181,17 +182,23 @@ Response Guidelines:
         throw new Error('No response content in Perplexity API response')
       }
 
-      const content = response.choices[0].message.content.trim()
-      console.log('[DEBUG] Final Perplexity response content:', content)
+      const fullContent = response.choices[0].message.content.trim()
+      console.log('[DEBUG] Full Perplexity response content:', fullContent)
+      
+      // Extract a short TTS-friendly summary (first 1-2 sentences)
+      const sentences = fullContent.split(/[.!?]+/).filter(s => s.trim().length > 0)
+      const ttsContent = sentences.slice(0, 2).join('. ').trim()
+      const finalTtsContent = ttsContent.endsWith('.') ? ttsContent : ttsContent + '.'
       
       // Add both query and response to history
       this.conversationHistory.push(query)
-      this.conversationHistory.push(content)
+      this.conversationHistory.push(fullContent)
       
       return {
         id: response.id || 'basic_query',
         model: response.model || 'sonar-pro',
-        content: content,
+        content: finalTtsContent, // Short version for TTS
+        fullContent: fullContent, // Full version for panels
         citations: this.extractCitations(response),
         metadata: {
           tokensUsed: response.usage?.total_tokens || 0,
@@ -257,12 +264,18 @@ Educational Focus:
 
     const result = await this.makeRequest('/chat/completions', requestData)
     
+    const fullContent = result.choices?.[0]?.message?.content || 'No response generated'
+    const sentences = fullContent.split(/[.!?]+/).filter(s => s.trim().length > 0)
+    const ttsContent = sentences.slice(0, 2).join('. ').trim()
+    const finalTtsContent = ttsContent.endsWith('.') ? ttsContent : ttsContent + '.'
+    
     return {
       id: result.id || 'reasoning_query',
       model: result.model || 'sonar-reasoning-pro',
-      content: result.choices?.[0]?.message?.content || 'No response generated',
+      content: finalTtsContent,
+      fullContent: fullContent,
       citations: this.extractCitations(result),
-      reasoning: this.extractReasoningSteps(result.choices?.[0]?.message?.content || ''),
+      reasoning: this.extractReasoningSteps(fullContent),
       metadata: {
         tokensUsed: result.usage?.total_tokens || 0,
         responseTime: 0
@@ -310,10 +323,16 @@ Voice-Friendly Delivery:
 
     const result = await this.makeRequest('/chat/completions', requestData)
     
+    const fullContent = result.choices?.[0]?.message?.content || 'No response generated'
+    const sentences = fullContent.split(/[.!?]+/).filter(s => s.trim().length > 0)
+    const ttsContent = sentences.slice(0, 2).join('. ').trim()
+    const finalTtsContent = ttsContent.endsWith('.') ? ttsContent : ttsContent + '.'
+    
     return {
       id: result.id || 'research_query',
       model: result.model || 'sonar-deep-research',
-      content: result.choices?.[0]?.message?.content || 'No response generated',
+      content: finalTtsContent,
+      fullContent: fullContent,
       citations: this.extractCitations(result),
       sources: this.extractSources(result),
       metadata: {

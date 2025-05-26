@@ -26,7 +26,8 @@ const App: React.FC = () => {
     setPerformanceMetrics,
     addPanel,
     setActivePanel,
-    setConversationActive
+    setConversationActive,
+    panels
   } = useMondayStore()
 
   // Initialize WebXR and check support
@@ -105,9 +106,21 @@ const App: React.FC = () => {
       console.log('🌟 App: Received voice response from backend:', response)
       
       // Add panels if provided
-      response.data?.panels?.forEach((panelData: any) => addPanel(panelData))
-      const mainPanel = response.data?.panels?.find((p: any) => p.isActive)
-      if (mainPanel) setActivePanel(mainPanel.id)
+      if (response.data?.panels && Array.isArray(response.data.panels)) {
+        console.log('🌟 App: Adding panels to store:', response.data.panels.length, 'panels')
+        response.data.panels.forEach((panelData: any, index: number) => {
+          console.log(`🌟 App: Adding panel ${index + 1}:`, panelData)
+          addPanel(panelData)
+        })
+        
+        const mainPanel = response.data.panels.find((p: any) => p.isActive)
+        if (mainPanel) {
+          console.log('🌟 App: Setting active panel:', mainPanel.id)
+          setActivePanel(mainPanel.id)
+        }
+      } else {
+        console.log('🌟 App: No panels in response or panels is not an array')
+      }
       
       // Handle TTS response through the unified system
       if (response.message) {
@@ -281,7 +294,7 @@ const App: React.FC = () => {
             alpha: false,
             powerPreference: 'high-performance' 
           }}
-          frameloop="demand"
+          frameloop="always"
         >
           <XR referenceSpace="local-floor">
             <ambientLight intensity={0.3} color="#20808D" />
@@ -338,6 +351,54 @@ const App: React.FC = () => {
         }}>
           {socketConnected ? 'Connected' : 'Disconnected'}
         </div>
+
+        {/* Debug: Panel Count */}
+        {window.location.hostname === 'localhost' && (
+          <div style={{
+            position: 'fixed',
+            bottom: '1rem',
+            right: '8rem',
+            padding: '0.5rem 1rem',
+            backgroundColor: 'rgba(32, 128, 141, 0.8)',
+            color: 'var(--paper-white)',
+            borderRadius: '0.25rem',
+            fontSize: '0.875rem',
+            zIndex: 1000
+          }}>
+            Panels: {panels.length}
+          </div>
+        )}
+
+        {/* Debug: Panel Details */}
+        {window.location.hostname === 'localhost' && panels.length > 0 && (
+          <div style={{
+            position: 'fixed',
+            top: '1rem',
+            left: '1rem',
+            padding: '1rem',
+            backgroundColor: 'rgba(9, 23, 23, 0.9)',
+            color: 'var(--paper-white)',
+            borderRadius: '0.25rem',
+            fontSize: '0.75rem',
+            zIndex: 1000,
+            maxWidth: '300px',
+            maxHeight: '200px',
+            overflow: 'auto'
+          }}>
+            <div style={{ fontWeight: 'bold', marginBottom: '0.5rem' }}>
+              Debug: Panels in Store ({panels.length})
+            </div>
+            {panels.map((panel, index) => (
+              <div key={panel.id} style={{ marginBottom: '0.5rem', padding: '0.25rem', backgroundColor: 'rgba(32, 128, 141, 0.2)' }}>
+                <div>#{index + 1}: {panel.title}</div>
+                <div>Type: {panel.type}</div>
+                <div>ID: {panel.id}</div>
+                <div>Active: {panel.isActive ? 'Yes' : 'No'}</div>
+                <div>Position: [{panel.position.join(', ')}]</div>
+              </div>
+            ))}
+          </div>
+        )}
 
         {/* Conversation Status */}
         {conversationActive && (
@@ -442,7 +503,7 @@ const App: React.FC = () => {
           onClick={emergencyReset}
           >
             <div style={{ fontWeight: 'bold', marginBottom: '0.5rem' }}>
-              🚫 Voice System Error
+               Voice System Error
             </div>
             <div style={{ fontSize: '0.75rem', marginBottom: '0.5rem' }}>
               {voiceError}

@@ -15,6 +15,11 @@ const SpatialOrchestrator = () => {
     setActivePanel
   } = useMondayStore()
 
+  // Debug logging
+  useEffect(() => {
+    console.log('SpatialOrchestrator: Panels updated:', panels.length, panels)
+  }, [panels])
+
   // Automatic spatial layout management
   useFrame(() => {
     if (!groupRef.current) return
@@ -22,35 +27,8 @@ const SpatialOrchestrator = () => {
     // Rotate the entire constellation slowly
     groupRef.current.rotation.y += 0.001
 
-    // Implement automatic panel positioning based on layout mode
-    panels.forEach((panel, index) => {
-      if (spatialLayout === 'focus' && panel.id !== activePanel) {
-        // Move non-active panels away in focus mode
-        const distance = 5
-        const angle = (index / panels.length) * Math.PI * 2
-        panel.position[0] = Math.cos(angle) * distance
-        panel.position[2] = Math.sin(angle) * distance
-      } else if (spatialLayout === 'research') {
-        // Spread panels in research constellation
-        const radius = 3
-        const layers = Math.ceil(panels.length / 6)
-        const layer = Math.floor(index / 6)
-        const angleStep = (Math.PI * 2) / Math.min(6, panels.length - layer * 6)
-        const angle = (index % 6) * angleStep
-        
-        panel.position[0] = Math.cos(angle) * (radius + layer * 1.5)
-        panel.position[1] = 1.6 + layer * 0.5
-        panel.position[2] = Math.sin(angle) * (radius + layer * 1.5)
-      } else {
-        // Default semicircle layout
-        const angle = (index / Math.max(panels.length - 1, 1)) * Math.PI - Math.PI / 2
-        const radius = 2.5
-        
-        panel.position[0] = Math.cos(angle) * radius
-        panel.position[1] = 1.6 + Math.sin(index * 0.5) * 0.3
-        panel.position[2] = Math.sin(angle) * radius * 0.5 - 1
-      }
-    })
+    // Don't mutate the original panel positions - create local positions instead
+    // The position mutation was causing issues with React's rendering
   })
 
   // Handle panel selection
@@ -58,17 +36,60 @@ const SpatialOrchestrator = () => {
     setActivePanel(panelId === activePanel ? null : panelId)
   }
 
+  // Calculate positions for panels without mutating the original data
+  const getPanelPosition = (panel: any, index: number): [number, number, number] => {
+    if (spatialLayout === 'focus' && panel.id !== activePanel) {
+      // Move non-active panels away in focus mode
+      const distance = 5
+      const angle = (index / panels.length) * Math.PI * 2
+      return [Math.cos(angle) * distance, panel.position[1], Math.sin(angle) * distance]
+    } else if (spatialLayout === 'research') {
+      // Spread panels in research constellation
+      const radius = 3
+      const layers = Math.ceil(panels.length / 6)
+      const layer = Math.floor(index / 6)
+      const angleStep = (Math.PI * 2) / Math.min(6, panels.length - layer * 6)
+      const angle = (index % 6) * angleStep
+      
+      return [
+        Math.cos(angle) * (radius + layer * 1.5),
+        1.6 + layer * 0.5,
+        Math.sin(angle) * (radius + layer * 1.5)
+      ]
+    } else {
+      // Default semicircle layout
+      const angle = (index / Math.max(panels.length - 1, 1)) * Math.PI - Math.PI / 2
+      const radius = 2.5
+      
+      return [
+        Math.cos(angle) * radius,
+        1.6 + Math.sin(index * 0.5) * 0.3,
+        Math.sin(angle) * radius * 0.5 - 1
+      ]
+    }
+  }
+
+  console.log('SpatialOrchestrator: Rendering with', panels.length, 'panels')
+
   return (
     <group ref={groupRef}>
       {/* Render information panels */}
-      {panels.map((panel) => (
-        <InformationPanel
-          key={panel.id}
-          panel={panel}
-          isActive={panel.id === activePanel}
-          onSelect={() => handlePanelSelect(panel.id)}
-        />
-      ))}
+      {panels.map((panel, index) => {
+        const position = getPanelPosition(panel, index)
+        console.log(`SpatialOrchestrator: Rendering panel ${index + 1}:`, panel.title, 'at position:', position)
+        
+        return (
+          <InformationPanel
+            key={panel.id}
+            panel={{
+              ...panel,
+              position: position
+            }}
+            isActive={panel.id === activePanel}
+            onSelect={() => handlePanelSelect(panel.id)}
+          />
+        )
+      })}
 
       {/* Render reasoning chain visualization */}
       {reasoningChain.map((step, index) => (

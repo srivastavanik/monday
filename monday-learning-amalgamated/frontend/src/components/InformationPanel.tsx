@@ -1,4 +1,4 @@
-import React, { useRef, useMemo } from 'react'
+import React, { useRef, useMemo, useEffect } from 'react'
 import { useFrame } from '@react-three/fiber'
 import { Text, Plane, Html } from '@react-three/drei'
 import { MondayPanel } from '../store/mondayStore'
@@ -16,6 +16,11 @@ const InformationPanel: React.FC<InformationPanelProps> = ({
 }) => {
   const meshRef = useRef<any>()
   const textRef = useRef<any>()
+  
+  // Debug logging
+  useEffect(() => {
+    console.log('InformationPanel: Rendering panel:', panel.title, 'at position:', panel.position)
+  }, [panel])
   
   // Animate panel based on state
   useFrame((state) => {
@@ -49,7 +54,8 @@ const InformationPanel: React.FC<InformationPanelProps> = ({
       content: '#FBFAF4',      // Paper White
       reasoning: '#20808D',     // True Turquoise
       research: '#091717',      // Offblack
-      visualization: '#20808D'  // True Turquoise
+      visualization: '#20808D', // True Turquoise
+      citations: '#FBFAF4'      // Paper White
     }
     
     return {

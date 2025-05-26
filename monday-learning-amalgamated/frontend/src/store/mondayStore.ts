@@ -4,7 +4,7 @@ import { devtools } from 'zustand/middleware'
 // Types for the Monday store
 export interface MondayPanel {
   id: string
-  type: 'content' | 'reasoning' | 'research' | 'visualization'
+  type: 'content' | 'reasoning' | 'research' | 'visualization' | 'citations'
   position: [number, number, number]
   rotation: [number, number, number]
   content: string
@@ -12,8 +12,9 @@ export interface MondayPanel {
   isActive: boolean
   opacity: number
   citations?: Citation[]
+  reasoning?: any[]
   createdAt: number
-  updatedAt: number
+  updatedAt?: number
 }
 
 export interface Citation {
@@ -100,7 +101,7 @@ export interface MondayState {
   setConnected: (connected: boolean) => void
   setSocket: (socket: any) => void
   initializeSession: (config: any) => void
-  addPanel: (panel: Omit<MondayPanel, 'id' | 'createdAt' | 'updatedAt'>) => void
+  addPanel: (panel: Partial<MondayPanel> & { type: string; content: string; title: string; position: [number, number, number]; rotation: [number, number, number] }) => void
   updatePanel: (id: string, updates: Partial<MondayPanel>) => void
   removePanel: (id: string) => void
   setActivePanel: (id: string | null) => void
@@ -178,17 +179,31 @@ export const useMondayStore = create<MondayState>()(
       })),
       
       addPanel: (panelData) => {
+        console.log('Store: Adding panel with data:', panelData)
+        
         const newPanel: MondayPanel = {
-          ...panelData,
+          // Set defaults first
           id: `panel_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
           createdAt: Date.now(),
-          updatedAt: Date.now()
+          updatedAt: Date.now(),
+          isActive: false,
+          opacity: 1,
+          // Then spread the incoming data (which may override defaults)
+          ...panelData,
+          // Ensure required fields are present
+          type: panelData.type as any, // Cast to handle 'citations' type
         }
         
-        set((state) => ({
-          panels: [...state.panels, newPanel],
-          activePanel: newPanel.id
-        }))
+        console.log('Store: Created panel object:', newPanel)
+        
+        set((state) => {
+          const newPanels = [...state.panels, newPanel]
+          console.log('Store: Updated panels array length:', newPanels.length)
+          return {
+            panels: newPanels,
+            activePanel: newPanel.isActive ? newPanel.id : state.activePanel
+          }
+        })
       },
       
       updatePanel: (id, updates) => set((state) => ({
