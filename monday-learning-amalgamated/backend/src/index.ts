@@ -366,6 +366,19 @@ io.on('connection', (socket) => {
               };
               
               response = await perplexityService.deepResearch(responseQuery, getConversationContext(socket.id), progressCallback);
+              
+              // Extract thinking process from fullContent if not already present
+              if (!response.thinkingProcess && response.fullContent) {
+                const thinkMatch = response.fullContent.match(/<think>([\s\S]*?)<\/think>/i);
+                if (thinkMatch) {
+                  response.thinkingProcess = thinkMatch[1].trim();
+                  console.log('🧠 Extracted thinking process for panel:', response.thinkingProcess.substring(0, 100) + '...');
+                  
+                  // Clean up main panel content by removing thinking process
+                  response.fullContent = response.fullContent.replace(/<think>[\s\S]*?<\/think>/i, '').trim();
+                  console.log('🧹 Cleaned main panel content');
+                }
+              }
             } else {
               response = await perplexityService.basicQuery(responseQuery, {
                 service: 'monday-backend',
@@ -581,49 +594,76 @@ function createSpatialPanels(response: any, mode: string, query: string, model: 
   // Handle thinking/researching responses differently
   if (response.metadata?.isThinking || response.metadata?.isResearching) {
     const isThinking = response.metadata?.isThinking;
+    const isResearching = response.metadata?.isResearching;
     const actionWord = isThinking ? 'thinking' : 'researching';
     const cleanQuery = query.replace(/^(please\s+)?(think\s+(through\s+|about\s+)?|research\s+|investigate\s+)/i, '').trim();
     
     console.log('🎯 createSpatialPanels: Creating progressive panels for', actionWord, 'process')
     
-    // Main panel shows thinking/researching status
+    // Main panel shows the final research content
     const mainPanel = {
       id: `panel_${Date.now()}_main`,
-      type: 'thinking',
+      type: 'content',
       position: [0, 1.5, -2],
       rotation: [0, 0, 0],
-      title: `Monday is ${actionWord}...`,
-      content: `I'm ${actionWord} through ${cleanQuery} step by step. Please wait while I work through this systematically.`,
+      title: isThinking ? 'Monday\'s Reasoning Process' : 'Monday\'s Research Analysis',
+      content: response.content,
+      fullContent: response.fullContent,
       isActive: true,
       opacity: 1,
       createdAt: Date.now(),
       model: model,
       isThinking: isThinking,
-      isResearching: response.metadata?.isResearching
+      isResearching: isResearching,
+      citations: response.citations || []
     }
     panels.push(mainPanel)
     console.log('🎯 createSpatialPanels: Created main panel:', mainPanel.id, mainPanel.type)
     
-    // Progressive reasoning/research panel on the side
-    const progressivePanel = {
-      id: `panel_${Date.now()}_progressive`,
-      type: isThinking ? 'progressive_reasoning' : 'progressive_research',
-      position: [2.5, 1.5, -1.5],
-      rotation: [0, -15, 0],
-      title: isThinking ? 'Reasoning Process' : 'Research Analysis',
-      content: response.fullContent || 'Starting analysis...', // Full reasoning/research content
-      fullContent: response.fullContent,
-      reasoning: response.reasoning || [],
-      sources: response.sources || [],
-      citations: response.citations || [],
-      isActive: false,
-      opacity: 0.9,
-      createdAt: Date.now(),
-      model: model,
-      progressive: true // Flag for progressive display
+    // Only create extra panels for deep research queries
+    if (isResearching) {
+      // Thinking process panel on the left
+      if (response.thinkingProcess) {
+        const thinkingPanel = {
+          id: `panel_${Date.now()}_thinking`,
+          type: 'content',
+          position: [-2.5, 1.5, -1.5],
+          rotation: [0, 15, 0],
+          title: 'Research Process',
+          content: response.thinkingProcess,
+          fullContent: response.thinkingProcess,
+          reasoning: response.reasoning || [],
+          sources: response.sources || [],
+          citations: response.citations || [],
+          isActive: true,
+          opacity: 0.9,
+          createdAt: Date.now(),
+          model: model
+        }
+        panels.push(thinkingPanel)
+        console.log('🎯 createSpatialPanels: Created thinking process panel:', thinkingPanel.id)
+      }
+      
+      // Progress panel on the right
+      const progressPanel = {
+        id: `panel_${Date.now()}_progress`,
+        type: 'content',
+        position: [2.5, 1.5, -1.5],
+        rotation: [0, -15, 0],
+        title: 'Research Progress',
+        content: `I'm researching through ${cleanQuery} step by step. Please wait while I work through this systematically.`,
+        fullContent: response.fullContent,
+        reasoning: response.reasoning || [],
+        sources: response.sources || [],
+        citations: response.citations || [],
+        isActive: true,
+        opacity: 0.9,
+        createdAt: Date.now(),
+        model: model
+      }
+      panels.push(progressPanel)
+      console.log('🎯 createSpatialPanels: Created progress panel:', progressPanel.id)
     }
-    panels.push(progressivePanel)
-    console.log('🎯 createSpatialPanels: Created progressive panel:', progressivePanel.id, progressivePanel.type)
     
     console.log('🎯 createSpatialPanels: Total panels created for progressive response:', panels.length)
     return panels;

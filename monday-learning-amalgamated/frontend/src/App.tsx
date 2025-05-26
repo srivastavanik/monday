@@ -74,7 +74,7 @@ const App: React.FC = () => {
   const {
     systemState,
     isListening,
-    isSpeaking,
+    isSpeaking, 
     isPlaying,
     transcript,
     conversationActive,
@@ -105,12 +105,12 @@ const App: React.FC = () => {
         }
         await tempContext.close()
         
-        setAudioInitialized(true)
+          setAudioInitialized(true)
         console.log('🌟 App: Audio initialized after user interaction')
-        return true
+          return true
       } catch (error) {
         console.warn('🌟 App: Audio initialization failed:', error)
-        return false
+    return false
       }
     }
     return true
@@ -189,7 +189,7 @@ const App: React.FC = () => {
           citations: response.data.citations || mainPanel.citations || [],
           model: response.data.model || 'sonar'
         })
-      } else {
+        } else {
         // Fallback: create static panel from response data directly
         let displayContent = response.message || 'No content available'
         let displayTitle = 'Monday Response'
@@ -323,7 +323,7 @@ const App: React.FC = () => {
         } catch (error) {
           console.error('🔓 App: Failed to unlock microphone after research:', error)
         }
-      } else {
+    } else {
         console.log('🔇 App: Research in progress, microphone remains locked')
       }
     }
@@ -658,23 +658,23 @@ const App: React.FC = () => {
         )}
 
         {/* System Status */}
-        <div style={{
-          position: 'fixed',
-          bottom: '3.5rem',
-          right: '1rem',
-          padding: '0.5rem 1rem',
+          <div style={{
+            position: 'fixed',
+            bottom: '3.5rem',
+            right: '1rem',
+            padding: '0.5rem 1rem',
           backgroundColor: systemState === SystemState.ERROR ? '#dc3545' : 
                           systemState === SystemState.ACTIVE_LISTENING ? 'var(--true-turquoise)' :
                           systemState === SystemState.PLAYING_TTS ? '#ff6600' :
                           'rgba(9, 23, 23, 0.8)',
-          color: 'var(--paper-white)',
-          borderRadius: '0.25rem',
-          fontSize: '0.875rem',
-          zIndex: 1000,
-          display: 'flex',
-          alignItems: 'center',
-          gap: '0.5rem'
-        }}>
+            color: 'var(--paper-white)',
+            borderRadius: '0.25rem',
+            fontSize: '0.875rem',
+            zIndex: 1000,
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.5rem'
+          }}>
           {systemState === SystemState.PLAYING_TTS && (
             <div style={{
               width: '8px',
@@ -691,7 +691,7 @@ const App: React.FC = () => {
            systemState === SystemState.ERROR ? '❌ Error' :
            systemState === SystemState.WAITING_FOR_ACTIVATION ? '⏳ Waiting' :
            '💤 Idle'}
-        </div>
+          </div>
 
         {/* Audio Initialization Prompt */}
         {!audioInitialized && (
@@ -864,4 +864,4 @@ const App: React.FC = () => {
   )
 }
 
-export default App 
+export default App

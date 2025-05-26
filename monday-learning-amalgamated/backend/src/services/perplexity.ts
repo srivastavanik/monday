@@ -30,6 +30,7 @@ export interface PerplexityResponse {
   model: string
   content: string
   fullContent?: string
+  thinkingProcess?: string
   citations?: Citation[]
   reasoning?: ReasoningStep[]
   sources?: Source[]
@@ -41,6 +42,7 @@ export interface PerplexityResponse {
     isResearching?: boolean
     isStreaming?: boolean
     progressUpdates?: ProgressUpdate[]
+    ttsMessage?: string
   }
 }
 
@@ -583,29 +585,32 @@ Educational Focus:
   }
 
   public async deepResearch(query: string, context?: string[] | ConversationEntry[], progressCallback?: (update: ProgressUpdate) => void): Promise<PerplexityResponse> {
-    console.log('🔥 NEW STREAMING DEEP RESEARCH METHOD CALLED!', { query, contextLength: context?.length });
+    console.log('🔥 Optimized deep research called:', { query, contextLength: context?.length });
     
     const messages: any[] = [];
     const progressUpdates: ProgressUpdate[] = [];
     
-    // Add system message
-    const systemPrompt = `You are Monday, conducting comprehensive research analysis.
+    // Add system message - trimmed to essential instructions
+    const systemPrompt = `You are Monday, conducting focused research analysis.
 
-Research Methodology:
-- Synthesize information from multiple high-quality sources
-- Present multiple perspectives on complex topics
-- Evaluate source credibility and recency
-- Identify knowledge gaps and areas of debate
-- Connect findings to broader implications
+Research Focus:
+- Synthesize key information from high-quality sources
+- Present clear findings with source backing
+- Focus on most relevant and recent information
+- Keep responses structured but concise
 
-Response Structure:
-- Opening: Brief context and research scope
-- Main findings: 3-4 key insights with source backing
-- Analysis: Critical evaluation and synthesis
-- Implications: Broader significance and applications
-- Conclusion: Summary and further research directions
+Response Format:
+- Brief context and scope
+- 2-3 key insights with sources
+- Critical evaluation
+- Practical implications
+- Brief conclusion
+- First, show your thinking process in <think> tags
+- Then provide the final research answer
+- Include sources and citations
+- Keep total response under 1000 words
 
-Voice-Friendly Delivery:
+Style and Delivery:
 - Use clear, flowing language suitable for TTS
 - Break up long sections with natural pauses
 - Avoid excessive technical jargon without explanation
@@ -616,44 +621,43 @@ Voice-Friendly Delivery:
       content: systemPrompt
     });
 
-    console.log('🔥 Processing research context...', { hasContext: !!context, contextType: typeof context?.[0] });
-
-    // Process context with new structure
+    // Process context more efficiently
     if (context && Array.isArray(context)) {
       let structuredContext: ConversationEntry[];
       
-      // Handle both old string format and new ConversationEntry format
       if (context.length > 0 && typeof context[0] === 'string') {
-        console.log('🔥 Converting legacy research context format');
         structuredContext = ContextCleaner.convertLegacyContext(context as string[]);
       } else {
-        console.log('🔥 Using new research context format');
         structuredContext = context as ConversationEntry[];
       }
       
-      console.log('🔥 Structured research context:', structuredContext);
-      
-      // Clean the context
-      const cleanedMessages = ContextCleaner.validateAndCleanContext(structuredContext);
-      console.log('🔥 Cleaned research messages:', cleanedMessages);
-      
-      // Ensure perfect alternation
+      // Only keep last 2-3 exchanges for context to reduce tokens
+      const recentContext = structuredContext.slice(-4);
+      const cleanedMessages = ContextCleaner.validateAndCleanContext(recentContext);
       const alternatingMessages = this.ensureAlternation(cleanedMessages);
-      console.log('🔥 Alternating research messages:', alternatingMessages);
-      
-      // Add to messages
       messages.push(...alternatingMessages);
     }
 
-    // Add the user query
+    // Add the user query with focus on efficiency
     messages.push({
       role: 'user',
-      content: `Conduct a comprehensive research analysis on: ${query}`
+      content: `Conduct a comprehensive research analysis on: ${query}. First show your thinking process in <think> tags, then provide the final research answer.`
     });
 
-    console.log('🔥 Final research messages before validation:', messages);
+    // Log token usage breakdown
+    const systemTokens = Math.ceil(systemPrompt.length / 4);
+    const contextTokens = messages.slice(1, -1).reduce((sum, msg) => sum + Math.ceil(msg.content.length / 4), 0);
+    const queryTokens = Math.ceil(messages[messages.length - 1].content.length / 4);
+    
+    console.log('📊 Deep Research Token Usage:', {
+      systemPrompt: `${systemTokens} tokens`,
+      context: `${contextTokens} tokens (${messages.length - 2} messages)`,
+      query: `${queryTokens} tokens`,
+      totalInput: `${systemTokens + contextTokens + queryTokens} tokens`,
+      maxOutput: '1000 tokens'
+    });
 
-    // Final validation
+    // Validate message structure
     this.validateMessageStructure(messages);
     
     // Log for debugging
@@ -666,7 +670,7 @@ Voice-Friendly Delivery:
     if (progressCallback) {
       const initialUpdate: ProgressUpdate = {
         type: 'researching',
-        message: `I'm conducting comprehensive research on ${query.replace(/^(please\s+)?(research\s+|investigate\s+)?/i, '').trim()}. Let me gather information from multiple sources and analyze the findings.`,
+        message: `I'm Researching ${query.replace(/^(please\s+)?(research\s+|investigate\s+)?/i, '').trim()}...`,
         progress: 5,
         sources: []
       };
@@ -700,39 +704,58 @@ Voice-Friendly Delivery:
     const requestData = {
       model: 'sonar-deep-research',
       messages: messages,
-      max_tokens: 800,
+      max_tokens: 1000, // Increased for full research response
       temperature: 0.3,
-      stream: true // Enable streaming for progressive display
+      stream: true
     };
 
     try {
       const result = await this.makeStreamingRequest('/chat/completions', requestData, (update) => {
-        // Override update type for research
-        const researchUpdate: ProgressUpdate = {
-          ...update,
-          type: update.type === 'thinking' ? 'synthesizing' : update.type,
-          message: update.type === 'thinking' ? 'Synthesizing research findings...' : update.message
-        };
-        progressUpdates.push(researchUpdate);
-        if (progressCallback) progressCallback(researchUpdate);
+        // Only send progress updates at key milestones to avoid spam
+        if (update.progress === 25 || update.progress === 60 || update.progress === 100) {
+          const researchUpdate: ProgressUpdate = {
+            ...update,
+            type: update.type === 'thinking' ? 'synthesizing' : update.type,
+            message: update.type === 'thinking' ? 'Synthesizing findings...' : update.message
+          };
+          progressUpdates.push(researchUpdate);
+          if (progressCallback) progressCallback(researchUpdate);
+        }
       });
       
       const fullContent = result.choices?.[0]?.message?.content || 'No response generated';
       
-      // Create a research message for TTS and main panel
-      const researchMessage = `I'm conducting comprehensive research on ${query.replace(/^(please\s+)?(research\s+|investigate\s+)?/i, '').trim()}. Let me gather information from multiple sources and analyze the findings.`;
+      // Extract thinking process and final answer
+      const thinkingMatch = fullContent.match(/<think>([\s\S]*?)<\/think>/);
+      const thinkingProcess = thinkingMatch ? thinkingMatch[1].trim() : '';
+      const finalAnswer = fullContent.replace(/<think>[\s\S]*?<\/think>/, '').trim();
+      
+      // Log final token usage
+      const outputTokens = Math.ceil(fullContent.length / 4);
+      console.log('📊 Deep Research Complete:', {
+        inputTokens: systemTokens + contextTokens + queryTokens,
+        outputTokens: outputTokens,
+        totalTokens: systemTokens + contextTokens + queryTokens + outputTokens,
+        responseLength: fullContent.length,
+        hasThinkingProcess: !!thinkingProcess,
+        hasFinalAnswer: !!finalAnswer
+      });
+      
+      // Create a short TTS response from the final answer
+      const shortResponse = this.createShortTTSResponse(finalAnswer, query);
       
       return {
         id: result.id || 'research_query',
         model: result.model || 'sonar-deep-research',
-        content: researchMessage, // Short research message for TTS
-        fullContent: fullContent, // Full research for progressive display
+        content: shortResponse, // Short message for TTS
+        fullContent: finalAnswer, // Final research answer for main panel
+        thinkingProcess: thinkingProcess, // Thinking process for thinking panel
         citations: this.extractCitations(result),
         sources: this.extractSources(result),
         metadata: {
           tokensUsed: result.usage?.total_tokens || 0,
           responseTime: 0,
-          isResearching: true, // Flag to indicate this is a research response
+          isResearching: true,
           isStreaming: true,
           progressUpdates: progressUpdates
         }
