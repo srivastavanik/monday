@@ -9,11 +9,11 @@ import dotenv from 'dotenv';
 import path from 'path';
 
 // Load environment variables from the root directory
-dotenv.config({ path: path.resolve(process.cwd(), '.env') });
+dotenv.config({ path: path.resolve(process.cwd(), '../.env') });
 console.log('[BACKEND LOG] Environment loaded, PORT:', process.env.PORT);
 console.log('[BACKEND LOG] PERPLEXITY_API_KEY exists:', !!process.env.PERPLEXITY_API_KEY);
 console.log('[BACKEND LOG] Current working directory:', process.cwd());
-console.log('[BACKEND LOG] Attempting to load .env from:', path.resolve(process.cwd(), '.env'));
+console.log('[BACKEND LOG] Attempting to load .env from:', path.resolve(process.cwd(), '../.env'));
 
 // Import services dynamically to handle errors gracefully
 let perplexityService: any = null;
@@ -74,7 +74,8 @@ const conversationContexts = new Map<string, ConversationEntry[]>();
 const sessionStates = new Map<string, { 
   isInConversation: boolean, 
   lastActivity: number,
-  currentTopic?: string 
+  currentTopic?: string,
+  isFirstInteraction: boolean  // Add this to track first interaction
 }>();
 
 // Monday's core identity and capabilities
@@ -202,6 +203,11 @@ io.on('connection', (socket) => {
   
   // Initialize conversation context for new connection
   conversationContexts.set(socket.id, []);
+  sessionStates.set(socket.id, {
+    isInConversation: false,
+    lastActivity: Date.now(),
+    isFirstInteraction: true  // Initialize as true
+  });
   
   // Voice command handler with Perplexity integration
   socket.on('voice_command', async (data) => {
@@ -218,7 +224,8 @@ io.on('connection', (socket) => {
       const commandLower = command.toLowerCase().trim();
       const sessionState = sessionStates.get(socket.id) || { 
         isInConversation: false, 
-        lastActivity: Date.now() 
+        lastActivity: Date.now(),
+        isFirstInteraction: true
       };
       
       // Check for reset conversation command
@@ -295,7 +302,8 @@ io.on('connection', (socket) => {
         sessionStates.set(socket.id, {
           isInConversation: true,
           lastActivity: Date.now(),
-          currentTopic: responseQuery || sessionState.currentTopic
+          currentTopic: responseQuery || sessionState.currentTopic,
+          isFirstInteraction: false  // Set to false after first interaction
         });
         
         try {
@@ -367,7 +375,7 @@ io.on('connection', (socket) => {
           updateConversationContext(socket.id, command, response.fullContent || response.content, response.content);
           
           // Create spatial learning panels based on response type
-          const panelData = createSpatialPanels(response, determinedMode, responseQuery, model);
+          const panelData = sessionState.isFirstInteraction ? [] : createSpatialPanels(response, determinedMode, responseQuery, model);
           
           // Send response to frontend
           console.log('🔥 DEBUGGING TTS MESSAGE:', {
@@ -383,7 +391,7 @@ io.on('connection', (socket) => {
             data: {
               panels: panelData,
               mode: determinedMode,
-              model: model, // Include model info in response
+              model: model,
               query: responseQuery,
               citations: response.citations || [],
               reasoning: response.reasoning || [],
@@ -527,6 +535,11 @@ console.log('[BACKEND LOG] All setup completed - ready for connections!');
 
 // Helper function to create spatial learning panels
 function createSpatialPanels(response: any, mode: string, query: string, model: string): any[] {
+  // Skip panel creation for initial greeting
+  if (mode === 'greeting' && query.includes("Greet the user warmly as Monday")) {
+    return [];
+  }
+  
   const panels: any[] = [];
   
   // Main content panel - use fullContent if available, otherwise content
