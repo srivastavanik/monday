@@ -1,6 +1,5 @@
 import axios from 'axios'
 import { logger } from '../utils/logger.js'
-import { ContextCleaner } from '../utils/contextCleaner.js'
 
 interface ConversationEntry {
   role: 'user' | 'assistant';
@@ -61,6 +60,83 @@ interface QueryContext {
   isMondayActivation?: boolean;
   isInActiveConversation?: boolean;
   sessionInConversation?: boolean;
+}
+
+// Define ContextCleaner class locally to avoid import issues
+class ContextCleaner {
+  // Remove voice recognition artifacts and clean messages
+  static cleanMessage(message: string): string {
+    // Remove common artifacts
+    const artifacts = [
+      /^s for you to explore$/i,
+      /^okay$/i,
+      /^mm-hmm$/i,
+      /^uh$/i,
+      /^\w{1,2}$/i, // Single or double character fragments
+      /^thanks for sharing your curiosity/i, // Monday's own phrases being picked up
+      /^i've gathered more details/i,
+      /^that's a great topic/i,
+    ];
+    
+    for (const artifact of artifacts) {
+      if (artifact.test(message.trim())) {
+        return ''; // Return empty to be filtered out
+      }
+    }
+    
+    // Clean up truncated sentences
+    if (message.endsWith('...') || message.endsWith('…')) {
+      // This is fine, keep it
+    } else if (message.length < 10 && !message.endsWith('.') && !message.endsWith('?') && !message.endsWith('!')) {
+      // Likely a fragment
+      return '';
+    }
+    
+    return message.trim();
+  }
+  
+  static validateAndCleanContext(entries: ConversationEntry[]): Array<{role: 'user' | 'assistant', content: string}> {
+    const cleaned: Array<{role: 'user' | 'assistant', content: string}> = [];
+    
+    for (const entry of entries) {
+      const cleanContent = this.cleanMessage(entry.content);
+      
+      // Skip empty or invalid messages
+      if (!cleanContent || cleanContent.length < 3) {
+        continue;
+      }
+      
+      cleaned.push({
+        role: entry.role,
+        content: cleanContent
+      });
+    }
+    
+    return cleaned;
+  }
+  
+  // Convert old string format to new format for backward compatibility
+  static convertLegacyContext(legacyContext: string[]): ConversationEntry[] {
+    const entries: ConversationEntry[] = [];
+    
+    for (const ctx of legacyContext) {
+      if (ctx.startsWith('User: ')) {
+        entries.push({
+          role: 'user',
+          content: ctx.replace('User: ', ''),
+          timestamp: Date.now()
+        });
+      } else if (ctx.startsWith('Monday: ')) {
+        entries.push({
+          role: 'assistant',
+          content: ctx.replace('Monday: ', ''),
+          timestamp: Date.now()
+        });
+      }
+    }
+    
+    return entries;
+  }
 }
 
 class PerplexityService {
@@ -215,6 +291,8 @@ Response Guidelines:
   }
 
   public async reasoningQuery(query: string, context?: string[] | ConversationEntry[]): Promise<PerplexityResponse> {
+    console.log('🔥 NEW REASONING QUERY METHOD CALLED!', { query, contextLength: context?.length });
+    
     const messages: any[] = [];
     
     // Add system message
@@ -244,23 +322,31 @@ Educational Focus:
       content: systemPrompt
     });
     
+    console.log('🔥 Processing context...', { hasContext: !!context, contextType: typeof context?.[0] });
+    
     // Process context with new structure
     if (context && Array.isArray(context)) {
       let structuredContext: ConversationEntry[];
       
       // Handle both old string format and new ConversationEntry format
       if (context.length > 0 && typeof context[0] === 'string') {
+        console.log('🔥 Converting legacy context format');
         // Convert old string format to new format
         structuredContext = ContextCleaner.convertLegacyContext(context as string[]);
       } else {
+        console.log('🔥 Using new context format');
         structuredContext = context as ConversationEntry[];
       }
       
+      console.log('🔥 Structured context:', structuredContext);
+      
       // Clean the context
       const cleanedMessages = ContextCleaner.validateAndCleanContext(structuredContext);
+      console.log('🔥 Cleaned messages:', cleanedMessages);
       
       // Ensure perfect alternation
       const alternatingMessages = this.ensureAlternation(cleanedMessages);
+      console.log('🔥 Alternating messages:', alternatingMessages);
       
       // Add to messages
       messages.push(...alternatingMessages);
@@ -271,6 +357,8 @@ Educational Focus:
       role: 'user',
       content: `Please think through this step by step: ${query}`
     });
+    
+    console.log('🔥 Final messages before validation:', messages);
     
     // Final validation
     this.validateMessageStructure(messages);
@@ -329,24 +417,22 @@ Educational Focus:
         // Toggle expected role
         expectedRole = expectedRole === 'user' ? 'assistant' : 'user';
       } else {
-        // Wrong role order detected
-        console.warn(`Skipping message with role ${msg.role}, expected ${expectedRole}`);
-        
-        // If we're skipping a user message and next is assistant, we need a placeholder
-        if (msg.role === 'user' && expectedRole === 'assistant') {
-          result.push({
-            role: 'assistant',
-            content: 'I understand.'
-          });
-          expectedRole = 'user';
-        }
+        // Wrong role order detected - skip this message but log it
+        console.warn(`⚠️ Skipping message with role ${msg.role}, expected ${expectedRole}: "${msg.content.substring(0, 50)}..."`);
       }
     }
     
-    // Ensure we don't end with a user message (API expects assistant response)
-    if (result.length > 0 && result[result.length - 1].role === 'assistant') {
-      result.pop(); // Remove last assistant message to make room for user query
+    // CRITICAL FIX: Ensure we end with assistant message so the new user query creates proper alternation
+    // If we have messages and the last one is user, we need to add a placeholder assistant message
+    if (result.length > 0 && result[result.length - 1].role === 'user') {
+      result.push({
+        role: 'assistant',
+        content: 'I understand. Please continue.'
+      });
+      console.log('🔧 Added placeholder assistant message to ensure alternation');
     }
+    
+    console.log('🔧 Final alternation result:', result.map(m => `${m.role}: ${m.content.substring(0, 30)}...`));
     
     return result;
   }
@@ -568,11 +654,24 @@ Voice-Friendly Delivery:
   }
 
   private createShortTTSResponse(fullContent: string, query: string): string {
+    console.log('🔥 TTS PROCESSING:', {
+      fullContentPreview: fullContent?.substring(0, 100),
+      fullContentLength: fullContent?.length,
+      query: query
+    });
+    
     // Create a proper introductory sentence for TTS that doesn't cut off
     const sentences = fullContent.split(/[.!?]+/).filter(s => s.trim().length > 0)
     
+    console.log('🔥 TTS SENTENCES:', {
+      sentenceCount: sentences.length,
+      firstSentence: sentences[0]?.substring(0, 100)
+    });
+    
     if (sentences.length === 0) {
-      return "I found some information about that topic for you."
+      const fallback = "I found some information about that topic for you.";
+      console.log('🔥 TTS FALLBACK (no sentences):', fallback);
+      return fallback;
     }
     
     // Take the first complete sentence and ensure it's a good TTS intro
@@ -583,9 +682,13 @@ Voice-Friendly Delivery:
       // Extract key topic from the query for a personalized intro
       const cleanQuery = query.replace(/^(hey monday,?\s*)/i, '').trim()
       if (cleanQuery.length > 0) {
-        return `I found some great information about ${cleanQuery}. Let me share what I discovered.`
+        const customResponse = `I found some great information about ${cleanQuery}. Let me share what I discovered.`;
+        console.log('🔥 TTS CUSTOM (long sentence):', customResponse);
+        return customResponse;
       } else {
-        return "I found some interesting information to share with you."
+        const fallback = "I found some interesting information to share with you.";
+        console.log('🔥 TTS FALLBACK (long sentence, no query):', fallback);
+        return fallback;
       }
     }
     
@@ -595,7 +698,9 @@ Voice-Friendly Delivery:
     }
     
     // Add a connecting phrase to indicate there's more detail in the panel
-    return `${firstSentence} I've gathered more details for you to explore.`
+    const finalResponse = `${firstSentence} I've gathered more details for you to explore.`;
+    console.log('🔥 TTS FINAL RESPONSE:', finalResponse);
+    return finalResponse;
   }
 
   async processQuery(queryData: PerplexityQuery): Promise<PerplexityResponse> {

@@ -370,6 +370,14 @@ io.on('connection', (socket) => {
           const panelData = createSpatialPanels(response, determinedMode, responseQuery, model);
           
           // Send response to frontend
+          console.log('🔥 DEBUGGING TTS MESSAGE:', {
+            messageContent: response.content,
+            messageLength: response.content?.length,
+            fullContent: response.fullContent,
+            fullContentLength: response.fullContent?.length,
+            messagePreview: response.content?.substring(0, 100)
+          });
+          
           socket.emit('voice_response', {
             message: response.content, // Short TTS message
             data: {
