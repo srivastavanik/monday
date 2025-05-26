@@ -130,7 +130,7 @@ class CommandValidator {
     // Check against recent TTS outputs with fuzzy matching
     for (const tts of this.recentTTSOutputs) {
       const similarity = this.calculateTextSimilarity(command, tts.text);
-      if (similarity > 0.6) { // 60% similarity threshold
+      if (similarity > 0.8) { // Increased threshold to 80% to be less aggressive
         return {
           valid: false,
           reason: `Command too similar to recent TTS output (${Math.round(similarity * 100)}% match)`,
@@ -138,8 +138,10 @@ class CommandValidator {
         };
       }
       
-      // Check for partial matches (command is substring of TTS)
-      if (tts.text.toLowerCase().includes(command.toLowerCase()) && command.length > 10) {
+      // Check for partial matches - but only if it's a very close match and short
+      if (tts.text.toLowerCase().includes(command.toLowerCase()) && 
+          command.length > 15 && // Increased minimum length
+          similarity > 0.7) { // Added similarity check
         return {
           valid: false,
           reason: 'Command appears to be fragment of recent TTS output',
@@ -186,8 +188,8 @@ class CommandValidator {
       c => now - c.timestamp < 10000 // Last 10 seconds
     );
     
-    // Too many rapid commands (likely TTS chunks)
-    if (recentCommands.length > 5) {
+    // Too many rapid commands (likely TTS chunks) - increased threshold
+    if (recentCommands.length > 8) { // Increased from 5 to 8
       return {
         valid: false,
         reason: 'Too many rapid commands detected (likely feedback)',
@@ -195,12 +197,12 @@ class CommandValidator {
       };
     }
     
-    // Check for very recent command (within 2 seconds)
+    // Check for very recent command (within 1 second) - reduced from 2 seconds
     const veryRecentCommands = recentCommands.filter(
-      c => now - c.timestamp < 2000
+      c => now - c.timestamp < 1000 // Reduced to 1 second
     );
     
-    if (veryRecentCommands.length > 1) {
+    if (veryRecentCommands.length > 2) { // Increased threshold
       return {
         valid: false,
         reason: 'Commands arriving too rapidly (likely feedback)',
@@ -240,10 +242,25 @@ class CommandValidator {
     // Check if this exact command was recently processed
     const recentExact = this.commandHistory.find(
       c => c.text.toLowerCase() === command.toLowerCase() && 
-           Date.now() - c.timestamp < 30000 // Within 30 seconds
+           Date.now() - c.timestamp < 10000 // Reduced to 10 seconds - allow repeated questions after 10s
     );
     
     if (recentExact) {
+      // Allow repeated legitimate user commands (thinking, research requests)
+      const legitimateRepeats = [
+        /^(can you )?think about/i,
+        /^(can you )?research/i,
+        /^(hey )?monday/i,
+        /^(what|how|why|when|where)/i
+      ];
+      
+      for (const pattern of legitimateRepeats) {
+        if (pattern.test(command)) {
+          console.log('CommandValidator: ✅ Allowing repeated legitimate command:', command);
+          return { valid: true };
+        }
+      }
+      
       return {
         valid: false,
         reason: 'Exact command recently processed (likely feedback loop)',

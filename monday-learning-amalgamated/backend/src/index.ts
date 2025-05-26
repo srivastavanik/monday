@@ -339,9 +339,33 @@ io.on('connection', (socket) => {
           let response;
           try {
             if (determinedMode === 'reasoning') {
-              response = await perplexityService.reasoningQuery(responseQuery, getConversationContext(socket.id));
+              // Create progress callback for streaming updates
+              const progressCallback = (update: any) => {
+                console.log('🔄 Reasoning progress update:', update);
+                socket.emit('reasoning_progress', {
+                  type: 'progress_update',
+                  update: update,
+                  query: responseQuery,
+                  model: model,
+                  timestamp: Date.now()
+                });
+              };
+              
+              response = await perplexityService.reasoningQuery(responseQuery, getConversationContext(socket.id), progressCallback);
             } else if (determinedMode === 'research') {
-              response = await perplexityService.deepResearch(responseQuery, getConversationContext(socket.id));
+              // Create progress callback for streaming updates
+              const progressCallback = (update: any) => {
+                console.log('🔍 Research progress update:', update);
+                socket.emit('research_progress', {
+                  type: 'progress_update',
+                  update: update,
+                  query: responseQuery,
+                  model: model,
+                  timestamp: Date.now()
+                });
+              };
+              
+              response = await perplexityService.deepResearch(responseQuery, getConversationContext(socket.id), progressCallback);
             } else {
               response = await perplexityService.basicQuery(responseQuery, {
                 service: 'monday-backend',
@@ -535,14 +559,79 @@ console.log('[BACKEND LOG] All setup completed - ready for connections!');
 
 // Helper function to create spatial learning panels
 function createSpatialPanels(response: any, mode: string, query: string, model: string): any[] {
+  console.log('🎯 createSpatialPanels: Creating panels for response:', {
+    mode,
+    model,
+    query: query.substring(0, 50),
+    hasMetadata: !!response.metadata,
+    isThinking: response.metadata?.isThinking,
+    isResearching: response.metadata?.isResearching,
+    hasFullContent: !!response.fullContent,
+    fullContentLength: response.fullContent?.length || 0
+  })
+  
   // Skip panel creation for initial greeting
   if (mode === 'greeting' && query.includes("Greet the user warmly as Monday")) {
+    console.log('🎯 createSpatialPanels: Skipping panels for greeting')
     return [];
   }
   
   const panels: any[] = [];
   
-  // Main content panel - use fullContent if available, otherwise content
+  // Handle thinking/researching responses differently
+  if (response.metadata?.isThinking || response.metadata?.isResearching) {
+    const isThinking = response.metadata?.isThinking;
+    const actionWord = isThinking ? 'thinking' : 'researching';
+    const cleanQuery = query.replace(/^(please\s+)?(think\s+(through\s+|about\s+)?|research\s+|investigate\s+)/i, '').trim();
+    
+    console.log('🎯 createSpatialPanels: Creating progressive panels for', actionWord, 'process')
+    
+    // Main panel shows thinking/researching status
+    const mainPanel = {
+      id: `panel_${Date.now()}_main`,
+      type: 'thinking',
+      position: [0, 1.5, -2],
+      rotation: [0, 0, 0],
+      title: `Monday is ${actionWord}...`,
+      content: `I'm ${actionWord} through ${cleanQuery} step by step. Please wait while I work through this systematically.`,
+      isActive: true,
+      opacity: 1,
+      createdAt: Date.now(),
+      model: model,
+      isThinking: isThinking,
+      isResearching: response.metadata?.isResearching
+    }
+    panels.push(mainPanel)
+    console.log('🎯 createSpatialPanels: Created main panel:', mainPanel.id, mainPanel.type)
+    
+    // Progressive reasoning/research panel on the side
+    const progressivePanel = {
+      id: `panel_${Date.now()}_progressive`,
+      type: isThinking ? 'progressive_reasoning' : 'progressive_research',
+      position: [2.5, 1.5, -1.5],
+      rotation: [0, -15, 0],
+      title: isThinking ? 'Reasoning Process' : 'Research Analysis',
+      content: response.fullContent || 'Starting analysis...', // Full reasoning/research content
+      fullContent: response.fullContent,
+      reasoning: response.reasoning || [],
+      sources: response.sources || [],
+      citations: response.citations || [],
+      isActive: false,
+      opacity: 0.9,
+      createdAt: Date.now(),
+      model: model,
+      progressive: true // Flag for progressive display
+    }
+    panels.push(progressivePanel)
+    console.log('🎯 createSpatialPanels: Created progressive panel:', progressivePanel.id, progressivePanel.type)
+    
+    console.log('🎯 createSpatialPanels: Total panels created for progressive response:', panels.length)
+    return panels;
+  }
+  
+  console.log('🎯 createSpatialPanels: Creating regular panels (not progressive)')
+  
+  // Regular response handling (non-thinking/researching)
   const panelContent = response.fullContent || response.content;
   
   panels.push({
@@ -552,12 +641,12 @@ function createSpatialPanels(response: any, mode: string, query: string, model: 
     rotation: [0, 0, 0],
     title: mode === 'greeting' ? 'Welcome to Monday' : `${mode.charAt(0).toUpperCase() + mode.slice(1)}: ${query.substring(0, 50)}${query.length > 50 ? '...' : ''}`,
     content: panelContent,
-    fullContent: response.fullContent, // Include the full content separately
+    fullContent: response.fullContent,
     isActive: true,
     opacity: 1,
     createdAt: Date.now(),
-    model: model, // Add model info to panel
-    citations: response.citations || [] // Include citations in the panel
+    model: model,
+    citations: response.citations || []
   });
   
   // Citations panel if available
@@ -581,8 +670,8 @@ function createSpatialPanels(response: any, mode: string, query: string, model: 
     });
   }
   
-  // Reasoning panel for complex queries
-  if (response.reasoning && response.reasoning.length > 0) {
+  // Reasoning panel for complex queries (non-progressive)
+  if (response.reasoning && response.reasoning.length > 0 && !response.metadata?.isThinking) {
     panels.push({
       id: `panel_${Date.now()}_reasoning`,
       type: 'reasoning',
@@ -599,5 +688,6 @@ function createSpatialPanels(response: any, mode: string, query: string, model: 
     });
   }
   
+  console.log('🎯 createSpatialPanels: Total panels created:', panels.length)
   return panels;
 }

@@ -13,6 +13,16 @@ export interface PerplexityQuery {
   mode: 'basic' | 'reasoning' | 'research'
   context?: string[]
   sessionId?: string
+  progressCallback?: (update: ProgressUpdate) => void
+}
+
+export interface ProgressUpdate {
+  type: 'thinking' | 'researching' | 'searching' | 'analyzing' | 'synthesizing' | 'complete'
+  message: string
+  progress: number // 0-100
+  sources?: string[]
+  reasoning?: string
+  metadata?: any
 }
 
 export interface PerplexityResponse {
@@ -27,6 +37,10 @@ export interface PerplexityResponse {
     tokensUsed: number
     responseTime: number
     confidence?: number
+    isThinking?: boolean
+    isResearching?: boolean
+    isStreaming?: boolean
+    progressUpdates?: ProgressUpdate[]
   }
 }
 
@@ -44,6 +58,7 @@ export interface ReasoningStep {
   content: string
   confidence: number
   sources: string[]
+  timestamp?: number
 }
 
 export interface Source {
@@ -199,7 +214,7 @@ Response Guidelines:
           'Authorization': `Bearer ${this.apiKey.trim()}`,
           'Accept': 'application/json'
         },
-        timeout: 30000
+        timeout: 60000 // Increased timeout for streaming
       })
       
       const responseTime = Date.now() - startTime
@@ -234,6 +249,147 @@ Response Guidelines:
         error: error.message,
         status: error.response?.status,
         responseData: error.response?.data ? JSON.stringify(error.response.data) : 'No response data'
+      })
+      throw error
+    }
+  }
+
+  private async makeStreamingRequest(endpoint: string, data: any, progressCallback?: (update: ProgressUpdate) => void): Promise<any> {
+    const startTime = Date.now()
+    const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`
+    const fullUrl = `${this.baseUrl}${cleanEndpoint}`
+    
+    try {
+      console.log('[DEBUG] Making streaming request to Perplexity API:', {
+        fullUrl: fullUrl,
+        model: data.model,
+        streaming: data.stream
+      })
+
+      const response = await fetch(fullUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.apiKey.trim()}`,
+          'Accept': 'text/event-stream'
+        },
+        body: JSON.stringify(data)
+      })
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+      }
+
+      if (!response.body) {
+        throw new Error('No response body for streaming')
+      }
+
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let fullContent = ''
+      let buffer = ''
+      let progressCount = 0
+      let lastProgressUpdate = 0
+
+      try {
+        while (true) {
+          const { done, value } = await reader.read()
+          
+          if (done) break
+
+          buffer += decoder.decode(value, { stream: true })
+          const lines = buffer.split('\n')
+          buffer = lines.pop() || '' // Keep incomplete line in buffer
+
+          for (const line of lines) {
+            if (line.trim() === '') continue
+            if (line.startsWith('data: ')) {
+              const sseData = line.slice(6)
+              if (sseData === '[DONE]') continue
+
+              try {
+                const parsed = JSON.parse(sseData)
+                const delta = parsed.choices?.[0]?.delta?.content
+                
+                if (delta) {
+                  fullContent += delta
+                  progressCount++
+
+                  // THROTTLED progress updates - only send every 10 chunks AND at least 2 seconds apart
+                  const now = Date.now()
+                  if (progressCallback && progressCount % 10 === 0 && (now - lastProgressUpdate) >= 2000) {
+                    const progress = Math.min(85, Math.floor(progressCount / 2)) // Slower progress, cap at 85%
+                    
+                    let updateType: ProgressUpdate['type'] = 'thinking'
+                    let message = 'Processing your request...'
+                    
+                    if (data.model?.includes('reasoning')) {
+                      updateType = 'thinking'
+                      message = 'Working through the reasoning process...'
+                    } else if (data.model?.includes('research')) {
+                      updateType = 'researching'
+                      message = 'Gathering information from multiple sources...'
+                    }
+
+                    console.log(`[DEBUG] Sending throttled progress update: ${progress}% (chunk ${progressCount})`)
+                    progressCallback({
+                      type: updateType,
+                      message: message,
+                      progress: progress,
+                      reasoning: fullContent.substring(0, 300) + (fullContent.length > 300 ? '...' : '')
+                    })
+                    
+                    lastProgressUpdate = now
+                  }
+                }
+              } catch (parseError) {
+                console.warn('Failed to parse streaming chunk:', parseError)
+              }
+            }
+          }
+        }
+      } finally {
+        reader.releaseLock()
+      }
+
+      // Send completion update
+      if (progressCallback) {
+        console.log('[DEBUG] Sending completion update')
+        progressCallback({
+          type: 'complete',
+          message: 'Analysis complete!',
+          progress: 100,
+          reasoning: fullContent
+        })
+      }
+
+      const responseTime = Date.now() - startTime
+      console.log('[DEBUG] Streaming request completed:', {
+        responseTime: `${responseTime}ms`,
+        contentLength: fullContent.length,
+        totalChunks: progressCount
+      })
+
+      // Return in expected format
+      return {
+        id: `streaming_${Date.now()}`,
+        model: data.model,
+        choices: [{
+          message: {
+            content: fullContent
+          }
+        }],
+        usage: {
+          total_tokens: Math.ceil(fullContent.length / 4) // Rough estimate
+        }
+      }
+
+    } catch (error: any) {
+      const responseTime = Date.now() - startTime
+      console.error('[DEBUG] Streaming request failed:', {
+        fullUrl: fullUrl,
+        error: error.message,
+        responseTime: `${responseTime}ms`
       })
       throw error
     }
@@ -290,10 +446,11 @@ Response Guidelines:
     }
   }
 
-  public async reasoningQuery(query: string, context?: string[] | ConversationEntry[]): Promise<PerplexityResponse> {
-    console.log('🔥 NEW REASONING QUERY METHOD CALLED!', { query, contextLength: context?.length });
+  public async reasoningQuery(query: string, context?: string[] | ConversationEntry[], progressCallback?: (update: ProgressUpdate) => void): Promise<PerplexityResponse> {
+    console.log('🔥 NEW STREAMING REASONING QUERY METHOD CALLED!', { query, contextLength: context?.length });
     
     const messages: any[] = [];
+    const progressUpdates: ProgressUpdate[] = [];
     
     // Add system message
     const systemPrompt = `You are Monday, an AI learning companion with advanced reasoning capabilities.
@@ -331,7 +488,6 @@ Educational Focus:
       // Handle both old string format and new ConversationEntry format
       if (context.length > 0 && typeof context[0] === 'string') {
         console.log('🔥 Converting legacy context format');
-        // Convert old string format to new format
         structuredContext = ContextCleaner.convertLegacyContext(context as string[]);
       } else {
         console.log('🔥 Using new context format');
@@ -374,25 +530,211 @@ Educational Focus:
       messages: messages,
       max_tokens: 500,
       temperature: 0.2,
-      stream: false
+      stream: true // Enable streaming for progressive display
     };
 
+    // Send initial progress update
+    if (progressCallback) {
+      const initialUpdate: ProgressUpdate = {
+        type: 'thinking',
+        message: `I'm thinking through ${query.replace(/^(please\s+)?think\s+(through\s+|about\s+)?/i, '').trim()} step by step. Let me work through this systematically.`,
+        progress: 10
+      };
+      progressUpdates.push(initialUpdate);
+      progressCallback(initialUpdate);
+    }
+
     try {
-      const result = await this.makeRequest('/chat/completions', requestData);
+      const result = await this.makeStreamingRequest('/chat/completions', requestData, (update) => {
+        // Override update type for reasoning
+        const reasoningUpdate: ProgressUpdate = {
+          ...update,
+          type: update.type === 'thinking' ? 'synthesizing' : update.type,
+          message: update.type === 'thinking' ? 'Synthesizing reasoning findings...' : update.message
+        };
+        progressUpdates.push(reasoningUpdate);
+        if (progressCallback) progressCallback(reasoningUpdate);
+      });
       
       const fullContent = result.choices?.[0]?.message?.content || 'No response generated';
-      const shortResponse = this.createShortTTSResponse(fullContent, query);
+      
+      // Create a thinking message for TTS and main panel
+      const thinkingMessage = `I'm thinking through ${query.replace(/^(please\s+)?think\s+(through\s+|about\s+)?/i, '').trim()} step by step. Let me work through this systematically.`;
       
       return {
         id: result.id || 'reasoning_query',
         model: result.model || 'sonar-reasoning-pro',
-        content: shortResponse,
-        fullContent: fullContent,
+        content: thinkingMessage, // Short thinking message for TTS
+        fullContent: fullContent, // Full reasoning for progressive display
         citations: this.extractCitations(result),
         reasoning: this.extractReasoningSteps(fullContent),
         metadata: {
           tokensUsed: result.usage?.total_tokens || 0,
-          responseTime: 0
+          responseTime: 0,
+          isThinking: true, // Flag to indicate this is a thinking response
+          isStreaming: true,
+          progressUpdates: progressUpdates
+        }
+      };
+    } catch (error: any) {
+      console.error('Perplexity API Error:', error.response?.data || error.message);
+      throw error;
+    }
+  }
+
+  public async deepResearch(query: string, context?: string[] | ConversationEntry[], progressCallback?: (update: ProgressUpdate) => void): Promise<PerplexityResponse> {
+    console.log('🔥 NEW STREAMING DEEP RESEARCH METHOD CALLED!', { query, contextLength: context?.length });
+    
+    const messages: any[] = [];
+    const progressUpdates: ProgressUpdate[] = [];
+    
+    // Add system message
+    const systemPrompt = `You are Monday, conducting comprehensive research analysis.
+
+Research Methodology:
+- Synthesize information from multiple high-quality sources
+- Present multiple perspectives on complex topics
+- Evaluate source credibility and recency
+- Identify knowledge gaps and areas of debate
+- Connect findings to broader implications
+
+Response Structure:
+- Opening: Brief context and research scope
+- Main findings: 3-4 key insights with source backing
+- Analysis: Critical evaluation and synthesis
+- Implications: Broader significance and applications
+- Conclusion: Summary and further research directions
+
+Voice-Friendly Delivery:
+- Use clear, flowing language suitable for TTS
+- Break up long sections with natural pauses
+- Avoid excessive technical jargon without explanation
+- Maintain conversational tone despite depth`;
+
+    messages.push({
+      role: 'system',
+      content: systemPrompt
+    });
+
+    console.log('🔥 Processing research context...', { hasContext: !!context, contextType: typeof context?.[0] });
+
+    // Process context with new structure
+    if (context && Array.isArray(context)) {
+      let structuredContext: ConversationEntry[];
+      
+      // Handle both old string format and new ConversationEntry format
+      if (context.length > 0 && typeof context[0] === 'string') {
+        console.log('🔥 Converting legacy research context format');
+        structuredContext = ContextCleaner.convertLegacyContext(context as string[]);
+      } else {
+        console.log('🔥 Using new research context format');
+        structuredContext = context as ConversationEntry[];
+      }
+      
+      console.log('🔥 Structured research context:', structuredContext);
+      
+      // Clean the context
+      const cleanedMessages = ContextCleaner.validateAndCleanContext(structuredContext);
+      console.log('🔥 Cleaned research messages:', cleanedMessages);
+      
+      // Ensure perfect alternation
+      const alternatingMessages = this.ensureAlternation(cleanedMessages);
+      console.log('🔥 Alternating research messages:', alternatingMessages);
+      
+      // Add to messages
+      messages.push(...alternatingMessages);
+    }
+
+    // Add the user query
+    messages.push({
+      role: 'user',
+      content: `Conduct a comprehensive research analysis on: ${query}`
+    });
+
+    console.log('🔥 Final research messages before validation:', messages);
+
+    // Final validation
+    this.validateMessageStructure(messages);
+    
+    // Log for debugging
+    this.logApiRequest('/chat/completions', {
+      model: 'sonar-deep-research',
+      messages: messages
+    });
+
+    // Send initial progress update
+    if (progressCallback) {
+      const initialUpdate: ProgressUpdate = {
+        type: 'researching',
+        message: `I'm conducting comprehensive research on ${query.replace(/^(please\s+)?(research\s+|investigate\s+)?/i, '').trim()}. Let me gather information from multiple sources and analyze the findings.`,
+        progress: 5,
+        sources: []
+      };
+      progressUpdates.push(initialUpdate);
+      progressCallback(initialUpdate);
+
+      // Simulate research phases with progress updates
+      setTimeout(() => {
+        const searchUpdate: ProgressUpdate = {
+          type: 'searching',
+          message: 'Searching through academic databases and reliable sources...',
+          progress: 25,
+          sources: ['Academic databases', 'Research papers', 'Expert publications']
+        };
+        progressUpdates.push(searchUpdate);
+        progressCallback(searchUpdate);
+      }, 1000);
+
+      setTimeout(() => {
+        const analyzeUpdate: ProgressUpdate = {
+          type: 'analyzing',
+          message: 'Analyzing source credibility and synthesizing findings...',
+          progress: 60,
+          sources: ['Peer-reviewed sources', 'Recent publications', 'Expert opinions']
+        };
+        progressUpdates.push(analyzeUpdate);
+        progressCallback(analyzeUpdate);
+      }, 3000);
+    }
+
+    const requestData = {
+      model: 'sonar-deep-research',
+      messages: messages,
+      max_tokens: 800,
+      temperature: 0.3,
+      stream: true // Enable streaming for progressive display
+    };
+
+    try {
+      const result = await this.makeStreamingRequest('/chat/completions', requestData, (update) => {
+        // Override update type for research
+        const researchUpdate: ProgressUpdate = {
+          ...update,
+          type: update.type === 'thinking' ? 'synthesizing' : update.type,
+          message: update.type === 'thinking' ? 'Synthesizing research findings...' : update.message
+        };
+        progressUpdates.push(researchUpdate);
+        if (progressCallback) progressCallback(researchUpdate);
+      });
+      
+      const fullContent = result.choices?.[0]?.message?.content || 'No response generated';
+      
+      // Create a research message for TTS and main panel
+      const researchMessage = `I'm conducting comprehensive research on ${query.replace(/^(please\s+)?(research\s+|investigate\s+)?/i, '').trim()}. Let me gather information from multiple sources and analyze the findings.`;
+      
+      return {
+        id: result.id || 'research_query',
+        model: result.model || 'sonar-deep-research',
+        content: researchMessage, // Short research message for TTS
+        fullContent: fullContent, // Full research for progressive display
+        citations: this.extractCitations(result),
+        sources: this.extractSources(result),
+        metadata: {
+          tokensUsed: result.usage?.total_tokens || 0,
+          responseTime: 0,
+          isResearching: true, // Flag to indicate this is a research response
+          isStreaming: true,
+          progressUpdates: progressUpdates
         }
       };
     } catch (error: any) {
@@ -468,6 +810,7 @@ Educational Focus:
     console.log('Endpoint:', endpoint);
     console.log('Model:', requestBody.model);
     console.log('Message count:', requestBody.messages.length);
+    console.log('Streaming:', requestBody.stream || false);
     console.log('Messages:');
     
     requestBody.messages.forEach((msg: any, index: number) => {
@@ -491,106 +834,6 @@ Educational Focus:
     
     console.log('Alternation valid:', alternationValid ? '✅' : '❌');
     console.log('============================\n');
-  }
-
-  public async deepResearch(query: string, context?: string[] | ConversationEntry[]): Promise<PerplexityResponse> {
-    const messages: any[] = [];
-    
-    // Add system message
-    const systemPrompt = `You are Monday, conducting comprehensive research analysis.
-
-Research Methodology:
-- Synthesize information from multiple high-quality sources
-- Present multiple perspectives on complex topics
-- Evaluate source credibility and recency
-- Identify knowledge gaps and areas of debate
-- Connect findings to broader implications
-
-Response Structure:
-- Opening: Brief context and research scope
-- Main findings: 3-4 key insights with source backing
-- Analysis: Critical evaluation and synthesis
-- Implications: Broader significance and applications
-- Conclusion: Summary and further research directions
-
-Voice-Friendly Delivery:
-- Use clear, flowing language suitable for TTS
-- Break up long sections with natural pauses
-- Avoid excessive technical jargon without explanation
-- Maintain conversational tone despite depth`;
-
-    messages.push({
-      role: 'system',
-      content: systemPrompt
-    });
-
-    // Process context with new structure
-    if (context && Array.isArray(context)) {
-      let structuredContext: ConversationEntry[];
-      
-      // Handle both old string format and new ConversationEntry format
-      if (context.length > 0 && typeof context[0] === 'string') {
-        // Convert old string format to new format
-        structuredContext = ContextCleaner.convertLegacyContext(context as string[]);
-      } else {
-        structuredContext = context as ConversationEntry[];
-      }
-      
-      // Clean the context
-      const cleanedMessages = ContextCleaner.validateAndCleanContext(structuredContext);
-      
-      // Ensure perfect alternation
-      const alternatingMessages = this.ensureAlternation(cleanedMessages);
-      
-      // Add to messages
-      messages.push(...alternatingMessages);
-    }
-
-    // Add the user query
-    messages.push({
-      role: 'user',
-      content: `Conduct a comprehensive research analysis on: ${query}`
-    });
-
-    // Final validation
-    this.validateMessageStructure(messages);
-    
-    // Log for debugging
-    this.logApiRequest('/chat/completions', {
-      model: 'sonar-deep-research',
-      messages: messages
-    });
-
-    const requestData = {
-      model: 'sonar-deep-research',
-      messages: messages,
-      max_tokens: 800,
-      temperature: 0.3,
-      stream: false
-    };
-
-    try {
-      const result = await this.makeRequest('/chat/completions', requestData);
-      
-      const fullContent = result.choices?.[0]?.message?.content || 'No response generated';
-      const shortResponse = this.createShortTTSResponse(fullContent, query);
-      
-      return {
-        id: result.id || 'research_query',
-        model: result.model || 'sonar-deep-research',
-        content: shortResponse,
-        fullContent: fullContent,
-        citations: this.extractCitations(result),
-        sources: this.extractSources(result),
-        metadata: {
-          tokensUsed: result.usage?.total_tokens || 0,
-          responseTime: 0
-        }
-      };
-    } catch (error: any) {
-      console.error('Perplexity API Error:', error.response?.data || error.message);
-      throw error;
-    }
   }
 
   private extractCitations(response: any): Citation[] {
@@ -618,7 +861,8 @@ Voice-Friendly Delivery:
           step: stepCount,
           content: stepMatch[2].trim(),
           confidence: 0.8, // Default confidence
-          sources: []
+          sources: [],
+          timestamp: Date.now()
         })
       }
     }

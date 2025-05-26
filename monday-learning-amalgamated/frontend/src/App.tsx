@@ -85,7 +85,9 @@ const App: React.FC = () => {
     emergencyReset,
     forceStartListening,
     forceStop,
-    interruptTTS
+    interruptTTS,
+    lockMicrophoneForProcess,
+    unlockMicrophoneAfterProcess
   } = useVoiceSystem({
     onError: (error) => {
       console.error('🌟 App: Voice system error:', error)
@@ -128,6 +130,10 @@ const App: React.FC = () => {
   useEffect(() => {
     if (!socket) return
 
+    // Make socket globally available for ProgressivePanel
+    ;(window as any).socket = socket
+    console.log('🌟 App: Socket made globally available for progressive panels')
+
     const handleVoiceResponse = async (response: any) => {
       console.log('🌟 App: Received voice response from backend:', response)
       
@@ -140,39 +146,102 @@ const App: React.FC = () => {
       if (response.data?.panels && Array.isArray(response.data.panels) && response.data.panels.length > 0) {
         const mainPanel = response.data.panels[0] // Use the first panel as the main content
         
-        // Use fullContent if available, otherwise fall back to content
-        // This ensures we show the complete API response, not the TTS intro
+        // For reasoning/research responses, show the full content, not the TTS message
         let displayContent = mainPanel.content || 'No content available'
+        let displayTitle = mainPanel.title || 'Monday Response'
         
-        // If there's fullContent available, use that instead (this is the complete API response)
+        // If there's fullContent available (reasoning/research), use that instead
         if (mainPanel.fullContent && mainPanel.fullContent !== mainPanel.content) {
           displayContent = mainPanel.fullContent
+          
+          // Clean up the reasoning content for display
+          if (displayContent.startsWith('<think>')) {
+            // Extract the reasoning content from the <think> tags
+            const thinkMatch = displayContent.match(/<think>([\s\S]*?)<\/think>/);
+            if (thinkMatch) {
+              displayContent = thinkMatch[1].trim()
+            } else {
+              // Remove <think> tags if no closing tag
+              displayContent = displayContent.replace(/<think>\s*/g, '').trim()
+            }
+          }
+          
+          // Update title for reasoning/research
+          if (response.data.mode === 'reasoning') {
+            displayTitle = 'Monday\'s Reasoning Process'
+          } else if (response.data.mode === 'research') {
+            displayTitle = 'Monday\'s Research Analysis'
+          }
         }
+        
+        console.log('🌟 App: Setting static panel data:', {
+          title: displayTitle,
+          contentLength: displayContent.length,
+          contentPreview: displayContent.substring(0, 100),
+          mode: response.data.mode,
+          hasFullContent: !!mainPanel.fullContent
+        })
         
         setStaticPanelData({
           isVisible: true,
-          title: mainPanel.title || 'Monday Response',
+          title: displayTitle,
           content: displayContent,
           citations: response.data.citations || mainPanel.citations || [],
           model: response.data.model || 'sonar'
         })
+      } else {
+        // Fallback: create static panel from response data directly
+        let displayContent = response.message || 'No content available'
+        let displayTitle = 'Monday Response'
+        
+        // Check if this is a reasoning/research response with metadata
+        if (response.data?.metadata?.isThinking && response.data?.metadata?.fullContent) {
+          displayContent = response.data.metadata.fullContent
+          displayTitle = 'Monday\'s Reasoning Process'
+          
+          // Clean up reasoning content
+          if (displayContent.startsWith('<think>')) {
+            const thinkMatch = displayContent.match(/<think>([\s\S]*?)<\/think>/);
+            if (thinkMatch) {
+              displayContent = thinkMatch[1].trim()
+            } else {
+              displayContent = displayContent.replace(/<think>\s*/g, '').trim()
+            }
+          }
+        } else if (response.data?.metadata?.isResearching && response.data?.metadata?.fullContent) {
+          displayContent = response.data.metadata.fullContent
+          displayTitle = 'Monday\'s Research Analysis'
+        }
+        
+        console.log('🌟 App: Setting fallback static panel data:', {
+          title: displayTitle,
+          contentLength: displayContent.length,
+          contentPreview: displayContent.substring(0, 100),
+          mode: response.data?.mode,
+          isThinking: response.data?.metadata?.isThinking,
+          isResearching: response.data?.metadata?.isResearching
+        })
+        
+        setStaticPanelData({
+          isVisible: true,
+          title: displayTitle,
+          content: displayContent,
+          citations: response.data?.citations || [],
+          model: response.data?.model || 'sonar'
+        })
       }
       
-      // Add panels if provided
+      // Add panels to the store for 3D visualization
       if (response.data?.panels && Array.isArray(response.data.panels)) {
-        console.log('🌟 App: Adding panels to store:', response.data.panels.length, 'panels')
-        response.data.panels.forEach((panelData: any, index: number) => {
-          console.log(`🌟 App: Adding panel ${index + 1}:`, panelData)
+        response.data.panels.forEach((panelData: any) => {
+          console.log('🌟 App: Adding panel to store:', panelData)
           addPanel(panelData)
         })
         
-        const mainPanel = response.data.panels.find((p: any) => p.isActive)
-        if (mainPanel) {
-          console.log('🌟 App: Setting active panel:', mainPanel.id)
-          setActivePanel(mainPanel.id)
+        // Set the first panel as active if there are panels
+        if (response.data.panels.length > 0) {
+          setActivePanel(response.data.panels[0].id)
         }
-      } else {
-        console.log('🌟 App: No panels in response or panels is not an array')
       }
       
       // Handle TTS response through the unified system
@@ -191,12 +260,84 @@ const App: React.FC = () => {
       console.error('🌟 App: Backend voice error:', errorData)
     }
 
+    const handleReasoningProgress = async (data: any) => {
+      console.log('🔄 App: Reasoning progress update:', data)
+      
+      // Update static panel with final reasoning result when complete
+      if (data.update?.type === 'complete' && data.update?.progress === 100) {
+        console.log('🔓 App: Reasoning completed, updating static panel with final result')
+        
+        // Extract and clean the final reasoning content
+        let finalContent = data.update?.reasoning || 'Reasoning process completed'
+        
+        // Clean up the reasoning content for display
+        if (finalContent.startsWith('<think>')) {
+          const thinkMatch = finalContent.match(/<think>([\s\S]*?)<\/think>/);
+          if (thinkMatch) {
+            finalContent = thinkMatch[1].trim()
+          } else {
+            finalContent = finalContent.replace(/<think>\s*/g, '').trim()
+          }
+        }
+        
+        // Update static panel with final reasoning result
+        setStaticPanelData({
+          isVisible: true,
+          title: 'Monday\'s Reasoning Process - Complete',
+          content: finalContent,
+          citations: [],
+          model: data.model || 'sonar-reasoning-pro'
+        })
+        
+        try {
+          await unlockMicrophoneAfterProcess()
+        } catch (error) {
+          console.error('🔓 App: Failed to unlock microphone after reasoning:', error)
+        }
+      } else {
+        console.log('🔇 App: Reasoning in progress, microphone remains locked')
+      }
+    }
+
+    const handleResearchProgress = async (data: any) => {
+      console.log('🔍 App: Research progress update:', data)
+      
+      // Update static panel with final research result when complete
+      if (data.update?.type === 'complete' && data.update?.progress === 100) {
+        console.log('🔓 App: Research completed, updating static panel with final result')
+        
+        // Extract the final research content
+        let finalContent = data.update?.reasoning || 'Research process completed'
+        
+        // Update static panel with final research result
+        setStaticPanelData({
+          isVisible: true,
+          title: 'Monday\'s Research Analysis - Complete',
+          content: finalContent,
+          citations: data.update?.sources || [],
+          model: data.model || 'sonar-deep-research'
+        })
+        
+        try {
+          await unlockMicrophoneAfterProcess()
+        } catch (error) {
+          console.error('🔓 App: Failed to unlock microphone after research:', error)
+        }
+      } else {
+        console.log('🔇 App: Research in progress, microphone remains locked')
+      }
+    }
+
     socket.on('voice_response', handleVoiceResponse)
     socket.on('voice_error', handleVoiceError)
+    socket.on('reasoning_progress', handleReasoningProgress)
+    socket.on('research_progress', handleResearchProgress)
 
     return () => {
       socket.off('voice_response', handleVoiceResponse)
       socket.off('voice_error', handleVoiceError)
+      socket.off('reasoning_progress', handleReasoningProgress)
+      socket.off('research_progress', handleResearchProgress)
     }
   }, [socket, handleTTSResponse, addPanel, setActivePanel])
 
@@ -264,6 +405,22 @@ const App: React.FC = () => {
     })
 
     if (shouldProcess) {
+      // CRITICAL: Lock microphone IMMEDIATELY for reasoning/research commands
+      const isReasoningCommand = normalizedCommand.includes('think') || normalizedCommand.includes('reason')
+      const isResearchCommand = normalizedCommand.includes('research') || normalizedCommand.includes('investigate')
+      
+      if (isReasoningCommand) {
+        console.log('🔇 App: IMMEDIATELY locking microphone for reasoning command')
+        lockMicrophoneForProcess('reasoning').catch(error => {
+          console.error('🔇 App: Failed to lock microphone for reasoning:', error)
+        })
+      } else if (isResearchCommand) {
+        console.log('🔇 App: IMMEDIATELY locking microphone for research command')
+        lockMicrophoneForProcess('research').catch(error => {
+          console.error('🔇 App: Failed to lock microphone for research:', error)
+        })
+      }
+      
       // If it's an explicit trigger, set conversation active
       if (isExplicitTrigger) {
         setConversationActive(true)
@@ -273,7 +430,9 @@ const App: React.FC = () => {
         command: transcript,
         isExplicitTrigger,
         conversationActive,
-        commandLength: transcript.length
+        commandLength: transcript.length,
+        isReasoningCommand,
+        isResearchCommand
       })
       
       console.log('🌟 App: 📤 Sending command to backend via WebSocket')
@@ -297,7 +456,7 @@ const App: React.FC = () => {
         needsTrigger: !isExplicitTrigger && !conversationActive
       })
     }
-  }, [transcript, lastProcessedTranscript, socket, socketConnected, conversationActive])
+  }, [transcript, lastProcessedTranscript, socket, socketConnected, conversationActive, lockMicrophoneForProcess])
 
   if (!isInitialized) {
     return <LoadingOverlay message="Initializing Monday..." />

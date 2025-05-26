@@ -24,6 +24,10 @@ interface UseVoiceSystemReturn {
   emergencyReset: () => Promise<void>
   interruptTTS: () => Promise<void>
   
+  // NEW: Process-specific microphone control
+  lockMicrophoneForProcess: (processType: 'reasoning' | 'research') => Promise<void>
+  unlockMicrophoneAfterProcess: () => Promise<void>
+  
   // Manual overrides (for fallback UI)
   forceStartListening: () => Promise<void>
   forceStop: () => void
@@ -185,6 +189,31 @@ export const useVoiceSystem = (options: UseVoiceSystemOptions = {}): UseVoiceSys
     }
   }, [])
 
+  // NEW: Process-specific microphone control
+  const lockMicrophoneForProcess = useCallback(async (processType: 'reasoning' | 'research') => {
+    console.log(`VoiceSystem: 🔒 Locking microphone for ${processType}...`)
+    if (controllerRef.current) {
+      try {
+        await controllerRef.current.lockMicrophoneForProcess(processType)
+      } catch (err: any) {
+        console.error('VoiceSystem: ❌ Lock microphone failed:', err)
+        setError(`Lock microphone failed: ${err.message}`)
+      }
+    }
+  }, [])
+
+  const unlockMicrophoneAfterProcess = useCallback(async () => {
+    console.log('VoiceSystem: 🔓 Unlocking microphone...')
+    if (controllerRef.current) {
+      try {
+        await controllerRef.current.unlockMicrophoneAfterProcess()
+      } catch (err: any) {
+        console.error('VoiceSystem: ❌ Unlock microphone failed:', err)
+        setError(`Unlock microphone failed: ${err.message}`)
+      }
+    }
+  }, [])
+
   // Manual overrides for fallback UI
   const forceStartListening = useCallback(async () => {
     console.log('VoiceSystem: 🎯 Force start listening (manual override)...')
@@ -233,6 +262,10 @@ export const useVoiceSystem = (options: UseVoiceSystemOptions = {}): UseVoiceSys
     handleTTSResponse,
     emergencyReset,
     interruptTTS,
+    
+    // NEW: Process-specific microphone control
+    lockMicrophoneForProcess,
+    unlockMicrophoneAfterProcess,
     
     // Manual overrides
     forceStartListening,

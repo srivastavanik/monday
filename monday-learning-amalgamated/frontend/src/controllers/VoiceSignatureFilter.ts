@@ -55,21 +55,18 @@ class VoiceSignatureFilter {
       }
     }
     
-    // Check for characteristic Monday phrases
+    // Check for characteristic Monday phrases - ONLY ACTUAL AI RESPONSE PHRASES
     const mondayPhrases = [
       "i'm monday",
-      "hello, i'm monday",
+      "hello, i'm monday", 
       "monday here",
-      "quantum mechanics",
-      "quantum entanglement", 
-      "superposition",
-      "wave function",
-      "schrödinger",
-      "heisenberg uncertainty",
-      "quantum field theory",
       "let me share what i discovered",
       "i found some great information",
-      "based on my research"
+      "based on my research",
+      "according to my analysis",
+      "i've gathered more details",
+      "that's a great topic",
+      "thanks for sharing your curiosity"
     ];
     
     for (const phrase of mondayPhrases) {

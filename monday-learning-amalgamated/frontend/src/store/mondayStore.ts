@@ -4,7 +4,7 @@ import { devtools } from 'zustand/middleware'
 // Types for the Monday store
 export interface MondayPanel {
   id: string
-  type: 'content' | 'reasoning' | 'research' | 'visualization' | 'citations'
+  type: 'content' | 'reasoning' | 'research' | 'visualization' | 'citations' | 'progressive_reasoning' | 'progressive_research' | 'thinking'
   position: [number, number, number]
   rotation: [number, number, number]
   content: string
@@ -15,6 +15,13 @@ export interface MondayPanel {
   reasoning?: any[]
   createdAt: number
   updatedAt?: number
+  // Additional properties for progressive panels
+  progressive?: boolean
+  fullContent?: string
+  sources?: any[]
+  isThinking?: boolean
+  isResearching?: boolean
+  model?: string
 }
 
 export interface Citation {
