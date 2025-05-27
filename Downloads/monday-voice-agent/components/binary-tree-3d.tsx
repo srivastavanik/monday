@@ -1,26 +1,46 @@
 "use client"
 
-import { useRef, useState, useEffect } from "react"
+import { useRef, useState, useEffect, useMemo } from "react"
 import { Canvas, useFrame } from "@react-three/fiber"
 import { Text, OrbitControls, Environment, Float } from "@react-three/drei"
 import * as THREE from "three"
 import type { JSX } from "react/jsx-runtime"
 
-interface TreeNode {
-  value: number
-  left?: TreeNode
-  right?: TreeNode
-  position: [number, number, number]
-  isHighlighted?: boolean
-  isVisiting?: boolean
+// Updated interface for general knowledge visualization
+export interface ConceptNode {
+  id: string | number;
+  value: string | number;
+  label?: string;
+  type?: "main" | "concept" | "detail" | "connection";
+  children?: ConceptNode[];
+  position?: [number, number, number];
+  color?: string;
+  size?: number;
+  importance?: number; // 0-1 scale for visual emphasis
 }
 
-interface TreeNodeProps {
-  node: TreeNode
-  onNodeClick?: (value: number) => void
+interface TransformedConceptNode {
+  id: string | number;
+  value: string | number;
+  label: string;
+  position: [number, number, number];
+  children: TransformedConceptNode[];
+  isHighlighted?: boolean;
+  isVisiting?: boolean;
+  color?: string;
+  size: number;
+  depth: number;
+  parentPosition?: [number, number, number];
+  type: "main" | "concept" | "detail" | "connection";
+  importance: number;
 }
 
-function TreeNodeComponent({ node, onNodeClick }: TreeNodeProps) {
+interface ConceptNodeProps {
+  node: TransformedConceptNode;
+  onNodeClick?: (value: string | number) => void;
+}
+
+function ConceptNodeComponent({ node, onNodeClick }: ConceptNodeProps) {
   const meshRef = useRef<THREE.Mesh>(null)
   const [hovered, setHovered] = useState(false)
 
@@ -31,11 +51,43 @@ function TreeNodeComponent({ node, onNodeClick }: TreeNodeProps) {
       } else {
         meshRef.current.scale.setScalar(hovered ? 1.15 : 1)
       }
+      
+      // Gentle floating animation based on importance
+      if (node.type === "main") {
+        meshRef.current.position.y += Math.sin(state.clock.elapsedTime * 2) * 0.05
+      }
     }
   })
 
-  const nodeColor = node.isVisiting ? "#10B981" : node.isHighlighted ? "#20808D" : hovered ? "#3B82F6" : "#64748B"
+  const getNodeColor = () => {
+    if (node.color) return node.color;
+    switch (node.type) {
+      case "main": return "#20808D";
+      case "concept": return "#3B82F6";
+      case "detail": return "#64748B";
+      case "connection": return "#10B981";
+      default: return "#64748B";
+    }
+  }
+
+  const baseColor = getNodeColor()
+  const nodeColor = node.isVisiting ? "#10B981" : node.isHighlighted ? "#20808D" : hovered ? "#3B82F6" : baseColor
   const emissiveColor = node.isVisiting ? "#065F46" : node.isHighlighted ? "#0F4C5C" : "#000000"
+
+  const getGeometry = () => {
+    switch (node.type) {
+      case "main":
+        return <sphereGeometry args={[node.size * 1.2, 32, 32]} />
+      case "concept":
+        return <boxGeometry args={[node.size, node.size, node.size]} />
+      case "detail":
+        return <sphereGeometry args={[node.size * 0.8, 16, 16]} />
+      case "connection":
+        return <octahedronGeometry args={[node.size * 0.9]} />
+      default:
+        return <sphereGeometry args={[node.size, 16, 16]} />
+    }
+  }
 
   return (
     <group position={node.position}>
@@ -46,64 +98,83 @@ function TreeNodeComponent({ node, onNodeClick }: TreeNodeProps) {
           onPointerOver={() => setHovered(true)}
           onPointerOut={() => setHovered(false)}
         >
-          <sphereGeometry args={[0.35, 32, 32]} />
+          {getGeometry()}
           <meshStandardMaterial
             color={nodeColor}
             emissive={emissiveColor}
             emissiveIntensity={node.isVisiting ? 0.3 : 0.1}
             roughness={0.2}
             metalness={0.8}
+            opacity={0.8 + node.importance * 0.2}
+            transparent
           />
         </mesh>
         <Text
-          position={[0, 0, 0.36]}
-          fontSize={0.25}
+          position={[0, 0, node.size + 0.1]}
+          fontSize={Math.max(0.15, node.size * 0.4)}
           color="#FBFAF4"
           anchorX="center"
           anchorY="middle"
-          font="/fonts/Inter-Bold.ttf"
+          maxWidth={3}
+          textAlign="center"
         >
-          {node.value}
+          {String(node.label)}
         </Text>
       </Float>
     </group>
   )
 }
 
-function TreeConnections({ tree }: { tree: TreeNode }) {
-  const connections: Array<{ start: [number, number, number]; end: [number, number, number] }> = []
+function ConceptConnections({ nodes }: { nodes: TransformedConceptNode[] }) {
+  const connections: Array<{ start: [number, number, number]; end: [number, number, number]; key: string; type: string }> = []
 
-  function addConnections(node: TreeNode) {
-    if (node.left) {
-      connections.push({ start: node.position, end: node.left.position })
-      addConnections(node.left)
+  nodes.forEach(node => {
+    if (node.parentPosition) {
+      connections.push({
+        start: node.parentPosition,
+        end: node.position,
+        key: `conn-${node.id}-parent`,
+        type: node.type
+      })
     }
-    if (node.right) {
-      connections.push({ start: node.position, end: node.right.position })
-      addConnections(node.right)
-    }
-  }
-
-  addConnections(tree)
+  })
 
   return (
     <>
-      {connections.map((conn, index) => {
+      {connections.map((conn) => {
         const start = new THREE.Vector3(...conn.start)
         const end = new THREE.Vector3(...conn.end)
         const direction = end.clone().sub(start)
         const length = direction.length()
         const midpoint = start.clone().add(direction.clone().multiplyScalar(0.5))
+        const orientation = new THREE.Matrix4()
+        const up = new THREE.Vector3(0, 1, 0)
+        orientation.lookAt(start, end, up)
+        orientation.multiply(new THREE.Matrix4().makeRotationX(Math.PI / 2))
+
+        const getConnectionColor = () => {
+          switch (conn.type) {
+            case "main": return "#20808D";
+            case "concept": return "#3B82F6";
+            case "detail": return "#64748B";
+            case "connection": return "#10B981";
+            default: return "#20808D";
+          }
+        }
 
         return (
-          <mesh key={index} position={midpoint.toArray()}>
-            <cylinderGeometry args={[0.03, 0.03, length]} />
+          <mesh
+            key={conn.key}
+            position={midpoint.toArray()}
+            quaternion={new THREE.Quaternion().setFromRotationMatrix(orientation)}
+          >
+            <cylinderGeometry args={[0.02, 0.02, length, 8]} />
             <meshStandardMaterial
-              color="#20808D"
-              opacity={0.8}
+              color={getConnectionColor()}
+              opacity={0.6}
               transparent
               emissive="#0F4C5C"
-              emissiveIntensity={0.2}
+              emissiveIntensity={0.1}
             />
           </mesh>
         )
@@ -121,150 +192,300 @@ function ParticleField() {
     }
   })
 
-  const particleCount = 100
+  const particleCount = 150
   const positions = new Float32Array(particleCount * 3)
 
   for (let i = 0; i < particleCount; i++) {
-    positions[i * 3] = (Math.random() - 0.5) * 20
-    positions[i * 3 + 1] = (Math.random() - 0.5) * 20
-    positions[i * 3 + 2] = (Math.random() - 0.5) * 20
+    positions[i * 3] = (Math.random() - 0.5) * 25
+    positions[i * 3 + 1] = (Math.random() - 0.5) * 25
+    positions[i * 3 + 2] = (Math.random() - 0.5) * 25
   }
 
   return (
     <points ref={particlesRef}>
       <bufferGeometry>
-        <bufferAttribute attach="attributes-position" array={positions} count={particleCount} itemSize={3} />
+        <bufferAttribute 
+          attach="attributes-position" 
+          args={[positions, 3]}
+          array={positions} 
+          count={particleCount} 
+          itemSize={3}
+        />
       </bufferGeometry>
-      <pointsMaterial color="#20808D" size={0.02} opacity={0.6} transparent />
+      <pointsMaterial color="#20808D" size={0.02} opacity={0.4} transparent />
     </points>
   )
 }
 
-export function BinaryTree3D() {
-  const [tree, setTree] = useState<TreeNode>({
-    value: 50,
-    position: [0, 2, 0],
-    left: {
-      value: 30,
-      position: [-2.5, 0.5, 0],
-      left: {
-        value: 20,
-        position: [-3.5, -1, 0],
-      },
-      right: {
-        value: 40,
-        position: [-1.5, -1, 0],
-      },
-    },
-    right: {
-      value: 70,
-      position: [2.5, 0.5, 0],
-      left: {
-        value: 60,
-        position: [1.5, -1, 0],
-      },
-      right: {
-        value: 80,
-        position: [3.5, -1, 0],
-      },
-    },
-  })
+// Function to generate knowledge visualization from query data
+function generateKnowledgeVisualization(data: any): ConceptNode {
+  if (!data) {
+    return {
+      id: "default",
+      value: "Knowledge",
+      label: "Knowledge Visualization",
+      type: "main",
+      children: [
+        {
+          id: "concept1",
+          value: "Concepts",
+          label: "Core Concepts",
+          type: "concept",
+          children: []
+        },
+        {
+          id: "detail1",
+          value: "Details",
+          label: "Key Details",
+          type: "detail",
+          children: []
+        }
+      ]
+    }
+  }
 
+  // Extract key concepts from the data
+  const query = data.query || "Learning Topic"
+  const mode = data.mode || "basic"
+  const content = data.content || ""
+  
+  // Generate concepts based on the query and content
+  const mainConcepts = extractConcepts(query, content, mode)
+  
+  return {
+    id: "main",
+    value: query,
+    label: query.length > 20 ? query.substring(0, 20) + "..." : query,
+    type: "main",
+    importance: 1,
+    children: mainConcepts
+  }
+}
+
+function extractConcepts(query: string, content: string, mode: string): ConceptNode[] {
+  const concepts: ConceptNode[] = []
+  
+  // Basic concept extraction based on query keywords
+  const queryWords = query.toLowerCase().split(/\s+/).filter(word => word.length > 3)
+  const importantWords = ['algorithm', 'theory', 'principle', 'method', 'concept', 'system', 'process', 'structure']
+  
+  queryWords.forEach((word, index) => {
+    if (importantWords.some(imp => word.includes(imp) || imp.includes(word))) {
+      concepts.push({
+        id: `concept_${index}`,
+        value: word,
+        label: word.charAt(0).toUpperCase() + word.slice(1),
+        type: "concept",
+        importance: 0.8,
+        children: []
+      })
+    }
+  })
+  
+  // Add mode-specific concepts
+  if (mode === "reasoning") {
+    concepts.push({
+      id: "reasoning",
+      value: "Analysis",
+      label: "Logical Analysis",
+      type: "connection",
+      importance: 0.9,
+      children: []
+    })
+  } else if (mode === "deep-research") {
+    concepts.push({
+      id: "research",
+      value: "Research",
+      label: "Deep Research",
+      type: "connection",
+      importance: 0.9,
+      children: []
+    })
+  }
+  
+  // Add some detail nodes
+  concepts.push({
+    id: "applications",
+    value: "Applications",
+    label: "Applications",
+    type: "detail",
+    importance: 0.6,
+    children: []
+  })
+  
+  concepts.push({
+    id: "examples",
+    value: "Examples",
+    label: "Examples",
+    type: "detail",
+    importance: 0.5,
+    children: []
+  })
+  
+  return concepts.slice(0, 6) // Limit to 6 concepts for clean visualization
+}
+
+// Layout function for knowledge visualization
+function layoutKnowledge(node: ConceptNode, depth = 0, xOffset = 0, yOffset = 0, parentPos?: [number, number, number]): TransformedConceptNode {
+  const ySpacing = -2
+  const xSpacing = 3
+  const radiusSpacing = 4
+
+  // Calculate position based on node type and depth
+  let position: [number, number, number]
+  
+  if (node.position) {
+    position = node.position
+  } else if (depth === 0) {
+    // Main node at center
+    position = [0, 0, 0]
+  } else if (depth === 1) {
+    // Arrange first level in a circle around the main node
+    const angle = (xOffset / (node.children?.length || 1)) * 2 * Math.PI
+    const radius = radiusSpacing
+    position = [
+      Math.cos(angle) * radius,
+      Math.sin(angle) * radius * 0.5,
+      Math.sin(angle) * radius * 0.3
+    ]
+  } else {
+    // Subsequent levels spread out more
+    position = [xOffset, yOffset + depth * ySpacing, depth * 0.5]
+  }
+
+  const size = node.size || (
+    node.type === "main" ? 0.5 :
+    node.type === "concept" ? 0.35 :
+    node.type === "connection" ? 0.3 :
+    0.25
+  )
+
+  const transformedNode: TransformedConceptNode = {
+    ...node,
+    label: node.label || String(node.value),
+    position,
+    children: [],
+    depth,
+    parentPosition: parentPos,
+    size,
+    type: node.type || "concept",
+    importance: node.importance || 0.5
+  }
+
+  if (node.children && node.children.length > 0) {
+    const numChildren = node.children.length
+    
+    transformedNode.children = node.children.map((child, index) => {
+      let childX = xOffset
+      let childY = yOffset
+      
+      if (depth === 0) {
+        // First level children arranged in circle
+        childX = index
+      } else {
+        // Subsequent levels spread horizontally
+        childX = xOffset + (index - (numChildren - 1) / 2) * xSpacing
+      }
+      
+      return layoutKnowledge(child, depth + 1, childX, childY, position)
+    })
+  }
+  
+  return transformedNode
+}
+
+function flattenKnowledge(node: TransformedConceptNode): TransformedConceptNode[] {
+  let nodes: TransformedConceptNode[] = [node]
+  node.children.forEach(child => {
+    nodes = nodes.concat(flattenKnowledge(child))
+  })
+  return nodes
+}
+
+interface BinaryTree3DProps {
+  visualizationData?: any
+  title?: string
+}
+
+export function BinaryTree3D({ visualizationData, title = "Knowledge Visualization" }: BinaryTree3DProps) {
   const [currentOperation, setCurrentOperation] = useState<string>("Initializing...")
-  const [visitingPath, setVisitingPath] = useState<number[]>([])
+  const [visitingPath, setVisitingPath] = useState<(string | number)[]>([])
+
+  const knowledgeTree = useMemo(() => {
+    const conceptData = generateKnowledgeVisualization(visualizationData)
+    return layoutKnowledge(conceptData)
+  }, [visualizationData])
+
+  const allNodes: TransformedConceptNode[] = useMemo(() => {
+    return flattenKnowledge(knowledgeTree)
+  }, [knowledgeTree])
 
   useEffect(() => {
-    if (!tree) return
-
-    const searchValue = 60
-    const path: number[] = []
-
-    function findPath(node: TreeNode | undefined, target: number): boolean {
-      if (!node) return false
-      path.push(node.value)
-      if (node.value === target) return true
-      if (target < node.value) {
-        return findPath(node.left, target)
+    if (allNodes.length > 0) {
+      if (visualizationData?.query) {
+        setCurrentOperation(`Visualizing: ${visualizationData.query}`)
       } else {
-        return findPath(node.right, target)
+        setCurrentOperation("Ready for exploration")
       }
+    } else {
+      setCurrentOperation("Initializing visualization...")
     }
+  }, [allNodes, visualizationData])
 
-    const animateSearch = async () => {
-      setCurrentOperation(`Searching for ${searchValue}`)
-      findPath(tree, searchValue)
-
-      for (let i = 0; i < path.length; i++) {
-        await new Promise((resolve) => setTimeout(resolve, 1800))
-        setVisitingPath(path.slice(0, i + 1))
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, 2500))
-      setCurrentOperation("Target Found!")
-
-      await new Promise((resolve) => setTimeout(resolve, 1500))
-      setVisitingPath([])
-      setCurrentOperation("Ready for next search")
-    }
-
-    const interval = setInterval(animateSearch, 10000)
-    return () => clearInterval(interval)
-  }, [tree])
-
-  function updateTreeWithVisiting(node: TreeNode): TreeNode {
-    return {
-      ...node,
-      isVisiting: visitingPath.includes(node.value),
-      isHighlighted: visitingPath.includes(node.value),
-      left: node.left ? updateTreeWithVisiting(node.left) : undefined,
-      right: node.right ? updateTreeWithVisiting(node.right) : undefined,
-    }
+  const handleNodeClick = (value: string | number) => {
+    console.log("Node clicked:", value)
+    // Could trigger additional actions like expanding details or searching
   }
 
-  const animatedTree = updateTreeWithVisiting(tree)
-
-  function renderTree(node: TreeNode): JSX.Element[] {
-    const elements = [<TreeNodeComponent key={node.value} node={node} />]
-    if (node.left) {
-      elements.push(...renderTree(node.left))
-    }
-    if (node.right) {
-      elements.push(...renderTree(node.right))
-    }
-    return elements
-  }
+  // Apply highlighting based on visitingPath
+  const nodesToRender = allNodes.map(node => ({
+    ...node,
+    isVisiting: visitingPath.includes(node.id),
+    isHighlighted: visitingPath.includes(node.id),
+  }))
 
   return (
-    <div className="w-full h-full relative overflow-hidden">
-      <div className="absolute top-6 left-6 z-10 bg-gradient-to-br from-[#20808D]/20 to-[#20808D]/10 backdrop-blur-xl rounded-2xl p-4 border border-[#20808D]/30 shadow-2xl">
+    <div className="w-full h-full relative overflow-hidden rounded-2xl border border-[#20808D]/30">
+      <div className="absolute top-6 left-6 z-10 bg-gradient-to-br from-[#20808D]/20 to-[#20808D]/10 backdrop-blur-xl rounded-2xl p-4 border border-[#20808D]/30 shadow-2xl max-w-xs">
         <div className="text-[#20808D] font-bold text-sm mb-2 flex items-center gap-2">
           <div className="w-2 h-2 bg-[#20808D] rounded-full animate-pulse"></div>
-          Binary Search Tree
+          {title}
         </div>
         <div className="text-[#FBFAF4] text-xs mb-1">Status: {currentOperation}</div>
-        {visitingPath.length > 0 && <div className="text-[#20808D] text-xs">Path: {visitingPath.join(" → ")}</div>}
+        <div className="text-[#20808D]/80 text-xs">
+          Mode: {visualizationData?.mode || "basic"} • Nodes: {allNodes.length}
+        </div>
+        {visitingPath.length > 0 && (
+          <div className="text-[#20808D] text-xs mt-1">Path: {visitingPath.join(" → ")}</div>
+        )}
       </div>
 
-      <Canvas camera={{ position: [0, 3, 10], fov: 45 }}>
+      <Canvas camera={{ position: [0, 3, 12], fov: 45 }}>
         <Environment preset="night" />
-        <ambientLight intensity={0.3} />
+        <ambientLight intensity={0.4} />
         <pointLight position={[10, 10, 10]} intensity={1.5} color="#20808D" />
         <pointLight position={[-10, -10, -10]} intensity={0.8} color="#FBFAF4" />
-        <spotLight position={[0, 15, 0]} intensity={1} color="#20808D" angle={0.3} penumbra={1} />
+        <spotLight position={[0, 15, 0]} intensity={1.2} color="#20808D" angle={0.3} penumbra={1} />
 
         <ParticleField />
-        <TreeConnections tree={animatedTree} />
-        {renderTree(animatedTree)}
+        <ConceptConnections nodes={nodesToRender} />
+        {nodesToRender.map(node => (
+          <ConceptNodeComponent 
+            key={node.id} 
+            node={node} 
+            onNodeClick={handleNodeClick}
+          />
+        ))}
 
         <OrbitControls
-          enablePan={false}
+          enablePan={true}
           enableZoom={true}
-          maxDistance={20}
-          minDistance={6}
+          maxDistance={50}
+          minDistance={3}
           autoRotate
-          autoRotateSpeed={0.3}
-          maxPolarAngle={Math.PI / 1.8}
-          minPolarAngle={Math.PI / 4}
+          autoRotateSpeed={0.5}
+          maxPolarAngle={Math.PI / 1.6}
+          minPolarAngle={Math.PI / 6}
         />
       </Canvas>
     </div>
