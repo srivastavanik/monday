@@ -12,6 +12,8 @@ interface VoiceProcessingPanelProps {
   userTranscript?: string
   voiceActive?: boolean
   processingError?: string | null
+  isModeSwitching?: boolean
+  modeSwitchMessage?: string
 }
 
 export function VoiceProcessingPanel({
@@ -21,7 +23,9 @@ export function VoiceProcessingPanel({
   mode,
   userTranscript,
   voiceActive,
-  processingError
+  processingError,
+  isModeSwitching = false,
+  modeSwitchMessage = ""
 }: VoiceProcessingPanelProps) {
   const [audioWaves, setAudioWaves] = useState([1, 1, 1, 1, 1, 1, 1, 1, 1])
   const [animatedProcessingSteps, setAnimatedProcessingSteps] = useState<string[]>([])
@@ -39,13 +43,31 @@ export function VoiceProcessingPanel({
 
   useEffect(() => {
     if (isThinking) {
-      const steps = [
-        "Initializing Sonar API connection...",
-        "Analyzing your query...",
-        `Accessing knowledge base for ${mode} model...`,
-        "Compiling information...",
-        "Formulating response...",
-      ]
+      const modeSpecificSteps = {
+        basic: [
+          "Initializing Sonar Basic search...",
+          "Analyzing your query...",
+          "Searching web sources...",
+          "Compiling quick answers...",
+          "Finalizing response..."
+        ],
+        reasoning: [
+          "Initializing Sonar Reasoning Pro...",
+          "Deep analytical processing...",
+          "Applying logical reasoning...",
+          "Cross-referencing knowledge base...",
+          "Synthesizing thoughtful response..."
+        ],
+        "deep-research": [
+          "Initializing Sonar Deep Research...",
+          "Comprehensive source analysis...",
+          "Multi-dimensional investigation...",
+          "Academic source validation...",
+          "Compiling research findings..."
+        ]
+      };
+      
+      const steps = modeSpecificSteps[mode];
       let stepIndex = 0
       setAnimatedProcessingSteps([steps[0]])
       const stepInterval = setInterval(() => {
@@ -55,7 +77,7 @@ export function VoiceProcessingPanel({
         } else {
           clearInterval(stepInterval)
         }
-      }, 700)
+      }, 800)
       return () => clearInterval(stepInterval)
     } else {
       setAnimatedProcessingSteps([])
@@ -66,27 +88,34 @@ export function VoiceProcessingPanel({
     switch (mode) {
       case "reasoning":
         return {
-          icon: <Brain className="w-5 h-5 text-[#20808D]" />,
+          icon: <Brain className="w-5 h-5 text-purple-400" />,
           label: "SONAR REASONING PRO",
-          gradient: "from-purple-500/20 to-[#20808D]/20",
+          gradient: "from-purple-500/20 to-purple-600/20",
+          triggerHints: "Say: 'think about', 'analyze', 'figure out', 'explain why'"
         }
       case "deep-research":
         return {
-          icon: <Activity className="w-5 h-5 text-[#20808D]" />,
+          icon: <Activity className="w-5 h-5 text-blue-400" />,
           label: "SONAR DEEP RESEARCH",
-          gradient: "from-blue-500/20 to-[#20808D]/20",
+          gradient: "from-blue-500/20 to-blue-600/20",
+          triggerHints: "Say: 'research into', 'investigate', 'deep dive', 'study'"
         }
       default:
         return {
-          icon: <Zap className="w-5 h-5 text-[#20808D]" />,
+          icon: <Zap className="w-5 h-5 text-green-400" />,
           label: "SONAR BASIC",
-          gradient: "from-green-500/20 to-[#20808D]/20",
+          gradient: "from-green-500/20 to-green-600/20",
+          triggerHints: "Say: 'search for', 'what is', 'find', 'define'"
         }
     }
   }
 
   const modeConfig = getModeConfig()
-  const displayStatus = processingError ? "Error" : isThinking ? "Processing" : isTyping ? "Speaking" : voiceActive ? "Listening" : "Ready"
+  const displayStatus = processingError ? "Error" : 
+                       isModeSwitching ? "Switching Mode" :
+                       isThinking ? "Processing" : 
+                       isTyping ? "Speaking" : 
+                       voiceActive ? "Listening" : "Ready"
 
   return (
     <div className="h-full flex flex-col bg-gradient-to-br from-[#091717] via-[#0A1A1A] to-[#091717] border border-[#20808D]/30 rounded-3xl overflow-hidden shadow-2xl backdrop-blur-xl text-[#FBFAF4]">
@@ -120,13 +149,29 @@ export function VoiceProcessingPanel({
 
       {/* Content Area */}
       <div className="flex-1 p-6 overflow-hidden flex flex-col">
+        {/* Mode Switch Message */}
+        {isModeSwitching && modeSwitchMessage && (
+          <div className="mb-4 p-4 bg-gradient-to-r from-blue-500/20 to-purple-500/20 border border-blue-400/30 rounded-xl shadow-lg">
+            <div className="flex items-center gap-3">
+              <div className="w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin"></div>
+              <span className="text-blue-400 font-semibold text-sm">{modeSwitchMessage}</span>
+            </div>
+          </div>
+        )}
+
         {isThinking ? (
           <div className="space-y-6 flex-1 flex flex-col justify-center items-center">
             <div className="flex items-center gap-4 mb-8">
               <div className="relative">
                 <Loader2 className="w-8 h-8 text-[#20808D] animate-spin" />
+                {mode === 'reasoning' && <Brain className="w-4 h-4 text-purple-400 absolute -top-1 -right-1" />}
+                {mode === 'deep-research' && <Activity className="w-4 h-4 text-blue-400 absolute -top-1 -right-1" />}
+                {mode === 'basic' && <Zap className="w-4 h-4 text-green-400 absolute -top-1 -right-1" />}
               </div>
-              <span className="text-[#20808D] font-bold text-xl">PROCESSING YOUR REQUEST</span>
+              <div className="flex flex-col">
+                <span className="text-[#20808D] font-bold text-xl">PROCESSING YOUR REQUEST</span>
+                <span className="text-[#20808D]/70 text-sm">{modeConfig.label} MODE</span>
+              </div>
             </div>
             <div className="space-y-3 w-full max-w-md">
               {animatedProcessingSteps.map((step, index) => (
@@ -143,11 +188,24 @@ export function VoiceProcessingPanel({
               <div className="mb-4 p-4 bg-[#20808D]/10 border border-[#20808D]/20 rounded-xl shadow">
                 <div className="flex items-center gap-3 mb-2">
                   <MessageSquare className="w-5 h-5 text-[#20808D]" />
-                  <span className="text-[#20808D] font-semibold text-sm">Your Query:</span>
+                  <span className="text-[#20808D] font-semibold text-sm">Your Query ({modeConfig.label}):</span>
                 </div>
                 <p className="text-[#FBFAF4]/80 text-sm font-mono">{userTranscript}</p>
               </div>
             )}
+            
+            {/* Voice Trigger Hints */}
+            {voiceActive && !userTranscript && !isThinking && !isTyping && (
+              <div className="mb-4 p-4 bg-gradient-to-r from-[#20808D]/10 to-[#20808D]/5 border border-[#20808D]/20 rounded-xl">
+                <div className="flex items-center gap-3 mb-2">
+                  <Mic className="w-5 h-5 text-[#20808D] animate-pulse" />
+                  <span className="text-[#20808D] font-semibold text-sm">Voice Triggers for {modeConfig.label}:</span>
+                </div>
+                <p className="text-[#FBFAF4]/70 text-xs">{modeConfig.triggerHints}</p>
+                <p className="text-[#20808D]/60 text-xs mt-1">Or just speak naturally - Monday will auto-detect the right mode!</p>
+              </div>
+            )}
+            
             {processingError && (
               <div className="mb-4 p-4 bg-red-500/10 border border-red-500/30 rounded-xl shadow">
                 <div className="flex items-center gap-3 mb-2">
@@ -160,6 +218,11 @@ export function VoiceProcessingPanel({
             <div className="flex items-center gap-4 mb-2">
               <Volume2 className="w-6 h-6 text-[#20808D]" />
               <span className="text-[#20808D] font-bold text-lg">MONDAY'S RESPONSE</span>
+              {currentResponse && (
+                <span className="text-[#20808D]/60 text-xs bg-[#20808D]/10 px-2 py-1 rounded-full">
+                  {modeConfig.label}
+                </span>
+              )}
             </div>
             <div className="flex-1 bg-gradient-to-br from-[#091717] to-[#0A1A1A] rounded-2xl p-6 overflow-y-auto shadow-inner border border-[#20808D]/20 custom-scrollbar min-h-[150px]">
               {currentResponse || (!isTyping && !isThinking && !processingError) ? (
@@ -169,7 +232,10 @@ export function VoiceProcessingPanel({
                 </div>
               ) : (
                 <div className="text-center text-[#20808D]/70 text-sm">
-                  {!processingError && (voiceActive ? "Listening... Speak now." : "Click the mic or select a mode to start.")}
+                  {!processingError && (voiceActive ? 
+                    "🎤 Listening... Say 'Hey Monday' + your question" : 
+                    "Click the mic button to start voice interaction"
+                  )}
                 </div>
               )}
             </div>

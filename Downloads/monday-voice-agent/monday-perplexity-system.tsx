@@ -81,6 +81,8 @@ export default function MondayPerplexitySystem() {
   const [isListeningForTrigger, setIsListeningForTrigger] = useState(true)
   const [lastTriggerTime, setLastTriggerTime] = useState(0)
   const [conversationMode, setConversationMode] = useState(false)
+  const [modeSwitchMessage, setModeSwitchMessage] = useState<string>("")
+  const [isModeSwitching, setIsModeSwitching] = useState(false)
 
   // --- Text-to-Speech Hook with ElevenLabs API ---
   const { speak, stop: stopSpeaking, isSpeaking, initializeAudioContext } = useTextToSpeech({
@@ -357,6 +359,109 @@ export default function MondayPerplexitySystem() {
     }
   }, [charIndex, fullResponseText, isReceiving]);
 
+  // Enhanced voice trigger detection for natural language
+  const detectVoiceMode = useCallback((command: string): { mode: "basic" | "reasoning" | "deep-research", confidence: number } => {
+    const commandLower = command.toLowerCase().trim();
+    
+    // Reasoning mode triggers - comprehensive natural language patterns
+    const reasoningTriggers = [
+      "think about", "analyze", "reasoning", "figure out", "work through", "solve this",
+      "explain why", "help me understand", "break down", "think through", "reason about",
+      "logic behind", "walk me through", "make sense of", "explain the reasoning",
+      "process this", "work this out", "think it through", "analyze this", "help me think",
+      "what's the logic", "how does this work", "can you reason", "step by step",
+      "logical analysis", "critical thinking", "problem solving", "analytical approach"
+    ];
+    
+    // Deep research mode triggers - comprehensive investigation patterns
+    const researchTriggers = [
+      "research into", "investigate", "deep dive", "find information about", "look into",
+      "study", "explore", "deep research", "comprehensive analysis", "thorough investigation",
+      "research this", "dig deeper", "find out about", "learn everything about",
+      "comprehensive study", "detailed research", "in-depth analysis", "full investigation",
+      "tell me everything", "complete overview", "detailed explanation", "extensive research",
+      "academic research", "scholarly analysis", "comprehensive review", "thorough study"
+    ];
+    
+    // Basic mode triggers - quick search and simple queries
+    const basicTriggers = [
+      "search the web", "find online", "what is", "define", "quick question",
+      "search for", "look up", "find", "basic search", "simple query",
+      "quick search", "web search", "google", "find me", "search", "who is",
+      "when did", "where is", "how much", "how many", "simple answer",
+      "quick answer", "basic question", "fast search", "just tell me"
+    ];
+    
+    // Check reasoning triggers first (highest priority for analytical thinking)
+    for (const trigger of reasoningTriggers) {
+      if (commandLower.includes(trigger)) {
+        return { mode: "reasoning", confidence: 0.95 };
+      }
+    }
+    
+    // Check research triggers (high priority for comprehensive investigation)
+    for (const trigger of researchTriggers) {
+      if (commandLower.includes(trigger)) {
+        return { mode: "deep-research", confidence: 0.9 };
+      }
+    }
+    
+    // Check basic triggers (standard search queries)
+    for (const trigger of basicTriggers) {
+      if (commandLower.includes(trigger)) {
+        return { mode: "basic", confidence: 0.8 };
+      }
+    }
+    
+    // Advanced pattern matching for implicit reasoning requests
+    if (commandLower.match(/\b(why|how|because|reason|cause|effect|impact|consequence)\b/)) {
+      return { mode: "reasoning", confidence: 0.7 };
+    }
+    
+    // Advanced pattern matching for research requests
+    if (commandLower.match(/\b(history|background|origin|development|evolution|comprehensive|detailed)\b/)) {
+      return { mode: "deep-research", confidence: 0.6 };
+    }
+    
+    // Default to current mode with low confidence
+    return { mode: currentMode, confidence: 0.1 };
+  }, [currentMode]);
+
+  // Enhanced mode switching with visual feedback
+  const switchToMode = useCallback((newMode: "basic" | "reasoning" | "deep-research", command: string, isVoiceTriggered: boolean = true) => {
+    if (newMode === currentMode) return;
+    
+    console.log(`Voice-triggered mode switch: ${currentMode} → ${newMode}`);
+    
+    // Set immediate visual feedback
+    setIsModeSwitching(true);
+    
+    // Create mode-specific status message
+    const modeLabels = {
+      "basic": "Basic Search",
+      "reasoning": "Reasoning Mode", 
+      "deep-research": "Deep Research Mode"
+    };
+    
+    const switchMessage = `Switching to ${modeLabels[newMode]}...`;
+    setModeSwitchMessage(switchMessage);
+    
+    // Immediate mode change for instant visual feedback
+    setCurrentMode(newMode);
+    
+    // Voice confirmation of mode switch
+    if (isVoiceTriggered && !isSpeaking) {
+      speak(`Switching to ${modeLabels[newMode]}`);
+    }
+    
+    // Clear switch message after brief display
+    setTimeout(() => {
+      setModeSwitchMessage("");
+      setIsModeSwitching(false);
+    }, 2000);
+    
+  }, [currentMode, isSpeaking, speak]);
+
   const sendVoiceCommand = useCallback((command: string, isExplicitTrigger: boolean = false, isActivation: boolean = false) => {
     if (!wsIsConnected) {
       setApiError("Not connected to Monday backend. Please wait for connection.");
@@ -370,6 +475,12 @@ export default function MondayPerplexitySystem() {
 
     console.log("Sending voice command:", command);
     
+    // FIRST: Detect and switch mode immediately for instant visual feedback
+    const modeDetection = detectVoiceMode(command);
+    if (modeDetection.confidence > 0.5) {
+      switchToMode(modeDetection.mode, command, true);
+    }
+    
     // Clear previous state immediately
     setApiError(null);
     setIsThinking(true);
@@ -379,21 +490,6 @@ export default function MondayPerplexitySystem() {
     setFullResponseText("");
     setCharIndex(0);
     setProgressUpdates([]);
-    
-    // Instantly determine and set mode based on command
-    const commandLower = command.toLowerCase();
-    let detectedMode = currentMode;
-    
-    if (commandLower.includes("think about") || commandLower.includes("analyze") || commandLower.includes("reasoning")) {
-      detectedMode = "reasoning";
-      setCurrentMode("reasoning");
-    } else if (commandLower.includes("research into") || commandLower.includes("investigate") || commandLower.includes("deep dive")) {
-      detectedMode = "deep-research";
-      setCurrentMode("deep-research");
-    } else if (commandLower.includes("search the web") || commandLower.includes("find online")) {
-      detectedMode = "basic";
-      setCurrentMode("basic");
-    }
 
     // Send command via WebSocket immediately
     wsSendMessage(JSON.stringify({
@@ -404,7 +500,7 @@ export default function MondayPerplexitySystem() {
       isActivation: isActivation,
       timestamp: Date.now()
     }));
-  }, [wsIsConnected, wsSendMessage, isInConversation, currentMode, isProcessingVoice]);
+  }, [wsIsConnected, wsSendMessage, isInConversation, isProcessingVoice, detectVoiceMode, switchToMode]);
 
   const toggleListening = () => {
     if (!isMounted) return;
@@ -439,14 +535,28 @@ export default function MondayPerplexitySystem() {
   };
 
   const getModeConfig = (mode: string) => {
-    switch (mode) {
-      case "reasoning":
-        return { icon: <Brain className="w-4 h-4" />, label: "Reasoning Pro" };
-      case "deep-research":
-        return { icon: <Activity className="w-4 h-4" />, label: "Deep Research" };
-      default:
-        return { icon: <Search className="w-4 h-4" />, label: "Basic" };
-    }
+    const configs = {
+      "reasoning": { 
+        icon: <Brain className="w-4 h-4" />, 
+        label: "Reasoning Pro",
+        color: "from-purple-500 to-purple-700",
+        description: "Deep analytical thinking"
+      },
+      "deep-research": { 
+        icon: <Activity className="w-4 h-4" />, 
+        label: "Deep Research",
+        color: "from-blue-500 to-blue-700", 
+        description: "Comprehensive investigation"
+      },
+      "basic": { 
+        icon: <Search className="w-4 h-4" />, 
+        label: "Basic",
+        color: "from-green-500 to-green-700",
+        description: "Quick search & answers"
+      }
+    };
+    
+    return configs[mode as keyof typeof configs] || configs.basic;
   };
 
   return (
@@ -475,27 +585,65 @@ export default function MondayPerplexitySystem() {
           </div>
         </div>
 
+        {/* Enhanced Mode Switching UI with Visual Feedback */}
         <div className="flex justify-center gap-4 mb-12">
           {(["basic", "reasoning", "deep-research"] as const).map((mode) => {
             const config = getModeConfig(mode);
+            const isActive = currentMode === mode;
             return (
               <button
                 key={mode}
                 onClick={() => startNewResponseFlow(mode)}
-                className={`flex items-center gap-3 px-6 py-3 rounded-2xl transition-all text-sm font-bold backdrop-blur-xl border ${
-                  currentMode === mode
-                    ? "bg-gradient-to-r from-[#20808D] to-[#20808D]/80 text-[#FBFAF4] border-[#20808D]/50 shadow-lg shadow-[#20808D]/30"
+                className={`relative flex items-center gap-3 px-6 py-3 rounded-2xl transition-all duration-300 text-sm font-bold backdrop-blur-xl border transform hover:scale-105 ${
+                  isActive
+                    ? `bg-gradient-to-r ${config.color} text-white border-white/50 shadow-xl shadow-current/30 scale-110`
                     : "bg-gradient-to-r from-[#20808D]/20 to-[#20808D]/10 text-[#20808D] hover:from-[#20808D]/30 hover:to-[#20808D]/20 border-[#20808D]/30"
                 }`}
               >
+                {isActive && isModeSwitching && (
+                  <div className="absolute inset-0 rounded-2xl bg-gradient-to-r from-white/20 to-transparent animate-pulse"></div>
+                )}
                 {config.icon}
-                Sonar {config.label}
+                <div className="flex flex-col items-start">
+                  <span>Sonar {config.label}</span>
+                  {isActive && (
+                    <span className="text-xs opacity-80">{config.description}</span>
+                  )}
+                </div>
+                {isActive && (
+                  <div className="absolute -top-1 -right-1 w-3 h-3 bg-white rounded-full animate-pulse"></div>
+                )}
               </button>
             );
           })}
         </div>
 
-        {/* Voice Status & Control */} 
+        {/* Mode Switch Status Message */}
+        {modeSwitchMessage && (
+          <div className="text-center mb-4 p-3 bg-gradient-to-r from-blue-500/20 to-purple-500/20 border border-blue-500/30 rounded-xl">
+            <div className="flex items-center justify-center gap-2">
+              <div className="w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin"></div>
+              <span className="text-blue-400 font-semibold">{modeSwitchMessage}</span>
+            </div>
+          </div>
+        )}
+
+        {/* Enhanced Status Indicators with Mode Information */}
+        {(isSpeaking || isProcessingVoice || isModeSwitching) && (
+          <div className="text-center mb-4 text-[#20808D] text-sm">
+            {isSpeaking && <span className="mr-4">🔊 Monday is speaking...</span>}
+            {isProcessingVoice && (
+              <span className="mr-4">
+                {currentMode === 'reasoning' && '🧠 Analyzing with deep reasoning...'}
+                {currentMode === 'deep-research' && '🔍 Conducting comprehensive research...'}
+                {currentMode === 'basic' && '🤔 Processing your request...'}
+              </span>
+            )}
+            {isModeSwitching && <span>⚡ Switching modes...</span>}
+          </div>
+        )}
+
+        {/* Enhanced Voice Status with Mode Display */} 
         <div className="flex justify-center items-center gap-4 mb-8">
           <button 
             onClick={toggleListening}
@@ -511,7 +659,7 @@ export default function MondayPerplexitySystem() {
           <div className="text-center">
             <div className="text-sm text-[#20808D] mb-1">
               {conversationMode 
-                ? "💬 In conversation - speak naturally"
+                ? `💬 In conversation - ${getModeConfig(currentMode).label} mode active`
                 : listening 
                 ? "🎤 Listening for 'Hey Monday'..." 
                 : "Voice recognition inactive"
@@ -519,24 +667,16 @@ export default function MondayPerplexitySystem() {
             </div>
             {!conversationMode && isListeningForTrigger && (
               <div className="text-xs text-gray-400">
-                Say "Hey Monday" to start a conversation
+                Say "Hey Monday" + command to start (auto-detects mode)
               </div>
             )}
             {conversationMode && (
               <div className="text-xs text-gray-400">
-                Say "goodbye" or "bye Monday" to end conversation
+                Voice triggers: "think about", "research into", "search for"
               </div>
             )}
           </div>
         </div>
-        
-        {/* Status Indicators */}
-        {(isSpeaking || isProcessingVoice) && (
-          <div className="text-center mb-4 text-[#20808D] text-sm">
-            {isSpeaking && <span className="mr-4">🔊 Monday is speaking...</span>}
-            {isProcessingVoice && <span>🤔 Processing your request...</span>}
-          </div>
-        )}
         
         {/* Error Display */}
         {apiError && (
@@ -569,6 +709,8 @@ export default function MondayPerplexitySystem() {
                 userTranscript={userTranscript}
                 voiceActive={listening}
                 processingError={apiError}
+                isModeSwitching={isModeSwitching}
+                modeSwitchMessage={modeSwitchMessage}
               />
             </div>
           </div>
