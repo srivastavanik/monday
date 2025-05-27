@@ -88,31 +88,53 @@ class VoiceSignatureFilter {
   private hasAIResponseStructure(text: string): boolean {
     // AI responses often have these characteristics:
     
-    // 1. Very formal/academic language
+    // 1. Very formal/academic language - but only if combined with other indicators
     const formalWords = ['furthermore', 'moreover', 'consequently', 'therefore', 'specifically', 'particularly'];
     const formalCount = formalWords.filter(word => text.includes(word)).length;
-    if (formalCount >= 2) return true;
     
-    // 2. Multiple technical terms in sequence
+    // 2. Multiple technical terms in sequence - RELAXED: Only flag if it's clearly an explanation
     const technicalTerms = ['quantum', 'mechanics', 'physics', 'theory', 'principle', 'phenomenon', 'research', 'study', 'analysis'];
     const technicalCount = technicalTerms.filter(term => text.includes(term)).length;
-    if (technicalCount >= 3) return true;
     
     // 3. Very long, complex sentences (typical of AI explanations)
     const sentences = text.split(/[.!?]+/).filter(s => s.trim().length > 0);
     const avgLength = sentences.reduce((sum, s) => sum + s.length, 0) / sentences.length;
-    if (avgLength > 100 && sentences.length > 2) return true;
+    const isVeryLong = avgLength > 150 && sentences.length > 3; // Increased threshold
     
     // 4. Starts with explanatory phrases
     const explanatoryStarts = [
       'in essence', 'essentially', 'fundamentally', 'basically', 'in simple terms',
       'to put it simply', 'in other words', 'what this means is', 'this refers to'
     ];
-    for (const start of explanatoryStarts) {
-      if (text.startsWith(start)) return true;
-    }
+    const hasExplanatoryStart = explanatoryStarts.some(start => text.startsWith(start));
     
-    return false;
+    // 5. Contains AI-like response indicators
+    const aiIndicators = [
+      'let me explain', 'i can help you understand', 'here\'s what you need to know',
+      'according to my analysis', 'based on my research', 'i\'ve found that'
+    ];
+    const hasAIIndicator = aiIndicators.some(indicator => text.includes(indicator));
+    
+    // CRITICAL FIX: Only flag as AI response if multiple indicators are present
+    // Don't flag simple user commands that happen to contain technical terms
+    
+    // Short commands (< 50 chars) are likely user commands, not AI responses
+    if (text.length < 50) return false;
+    
+    // User commands typically start with action words
+    const userCommandStarts = ['can you', 'please', 'tell me', 'explain', 'what is', 'how does', 'research', 'think about'];
+    const isUserCommand = userCommandStarts.some(start => text.startsWith(start));
+    if (isUserCommand) return false;
+    
+    // Only flag if we have multiple strong indicators
+    let indicatorCount = 0;
+    if (formalCount >= 3) indicatorCount++; // Increased threshold
+    if (technicalCount >= 5 && isVeryLong) indicatorCount++; // Only if very technical AND very long
+    if (hasExplanatoryStart) indicatorCount++;
+    if (hasAIIndicator) indicatorCount++;
+    
+    // Need at least 2 strong indicators to flag as AI response
+    return indicatorCount >= 2;
   }
   
   // Enhanced recognition with filtering

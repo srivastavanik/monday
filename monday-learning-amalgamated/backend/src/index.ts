@@ -668,7 +668,7 @@ function createSpatialPanels(response: any, mode: string, query: string, model: 
   // Regular response handling (non-thinking/researching)
   const panelContent = response.fullContent || response.content;
   
-  panels.push({
+  const mainPanel = {
     id: `panel_${Date.now()}_main`,
     type: 'content',
     position: [-1.5, 1.6, -2],
@@ -684,7 +684,7 @@ function createSpatialPanels(response: any, mode: string, query: string, model: 
     createdAt: Date.now(),
     model: model,
     citations: response.citations || []
-  }
+  };
   panels.push(mainPanel)
   console.log('🎯 createSpatialPanels: Created main panel:', mainPanel.id)
   

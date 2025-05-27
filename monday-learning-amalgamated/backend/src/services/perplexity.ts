@@ -291,168 +291,161 @@ Response Guidelines:
     }
   }
 
-  private async makeStreamingRequest(endpoint: string, data: any, progressCallback?: (update: ProgressUpdate) => void): Promise<any> {
-    const startTime = Date.now()
-    const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`
-    const fullUrl = `${this.baseUrl}${cleanEndpoint}`
-    
+  private async makeStreamingRequest(endpoint: string, data: any, progressCallback?: (update: any) => void): Promise<any> {
+    console.log('[DEBUG] Making streaming request to Perplexity API:', {
+      fullUrl: `${this.baseUrl}${endpoint}`,
+      model: data.model,
+      streaming: data.stream,
+      maxTokens: data.max_tokens
+    });
+
+    const response = await fetch(`${this.baseUrl}${endpoint}`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${this.apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(data),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`HTTP ${response.status}: ${errorText}`);
+    }
+
+    if (!response.body) {
+      throw new Error('No response body available for streaming');
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let fullContent = '';
+    let chunkCount = 0;
+    let lastProgressUpdate = 0;
+    const startTime = Date.now();
+
     try {
-      console.log('[DEBUG] Making streaming request to Perplexity API:', {
-        fullUrl: fullUrl,
-        model: data.model,
-        streaming: data.stream,
-        maxTokens: data.max_tokens
-      })
+      while (true) {
+        const { done, value } = await reader.read();
+        
+        if (done) {
+          console.log('[DEBUG] Streaming completed, final content length:', fullContent.length);
+          break;
+        }
 
-      const response = await fetch(fullUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${this.apiKey.trim()}`,
-          'Accept': 'text/event-stream'
-        },
-        body: JSON.stringify(data)
-      })
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
 
-      if (!response.ok) {
-        const errorText = await response.text()
-        console.error('[DEBUG] Streaming request failed:', {
-          status: response.status,
-          statusText: response.statusText,
-          errorText: errorText
-        })
-        throw new Error(`HTTP ${response.status}: ${response.statusText} - ${errorText}`)
-      }
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const jsonStr = line.slice(6);
+            if (jsonStr === '[DONE]') {
+              console.log('[DEBUG] Received [DONE] signal');
+              continue;
+            }
 
-      if (!response.body) {
-        throw new Error('No response body for streaming')
-      }
-
-      const reader = response.body.getReader()
-      const decoder = new TextDecoder()
-      let fullContent = ''
-      let buffer = ''
-      let progressCount = 0
-      let lastProgressUpdate = 0
-      let isComplete = false
-
-      try {
-        while (true) {
-          const { done, value } = await reader.read()
-          
-          if (done) {
-            console.log('[DEBUG] Streaming completed, final content length:', fullContent.length)
-            break
-          }
-
-          buffer += decoder.decode(value, { stream: true })
-          const lines = buffer.split('\n')
-          buffer = lines.pop() || '' // Keep incomplete line in buffer
-
-          for (const line of lines) {
-            if (line.trim() === '') continue
-            if (line.startsWith('data: ')) {
-              const sseData = line.slice(6)
-              if (sseData === '[DONE]') {
-                console.log('[DEBUG] Received [DONE] signal, content length:', fullContent.length)
-                isComplete = true
-                continue
-              }
-
-              try {
-                const parsed = JSON.parse(sseData)
-                const delta = parsed.choices?.[0]?.delta?.content
+            try {
+              const chunk = JSON.parse(jsonStr);
+              const content = chunk.choices?.[0]?.delta?.content || '';
+              
+              if (content) {
+                fullContent += content;
+                chunkCount++;
                 
-                if (delta) {
-                  fullContent += delta
-                  progressCount++
-
-                  // IMPROVED progress updates - send every 3 chunks AND at least 800ms apart
-                  const now = Date.now()
-                  if (progressCallback && progressCount % 3 === 0 && (now - lastProgressUpdate) >= 800) {
-                    const progress = Math.min(85, Math.floor(progressCount * 2)) // Moderate progress, cap at 85%
-                    
-                    let updateType: ProgressUpdate['type'] = 'thinking'
-                    let message = 'Processing your request...'
-                    
-                    if (data.model?.includes('reasoning')) {
-                      updateType = 'thinking'
-                      message = 'Working through the reasoning process...'
-                    } else if (data.model?.includes('research')) {
-                      updateType = 'researching'
-                      message = 'Gathering information from multiple sources...'
-                    }
-
-                    console.log(`[DEBUG] Sending progress update: ${progress}% (chunk ${progressCount}, content: ${fullContent.length} chars)`)
-                    progressCallback({
-                      type: updateType,
-                      message: message,
-                      progress: progress,
-                      reasoning: fullContent // Send full content for real-time display
-                    })
-                    
-                    lastProgressUpdate = now
-                  }
+                // Send progress updates every 10 chunks or every 2 seconds, whichever comes first
+                const now = Date.now();
+                const shouldSendUpdate = (
+                  chunkCount % 10 === 0 || 
+                  (now - lastProgressUpdate) >= 2000 ||
+                  fullContent.length > 0 && fullContent.length % 500 === 0
+                );
+                
+                if (shouldSendUpdate && progressCallback) {
+                  // Calculate progress based on content length and estimated completion
+                  let estimatedProgress = Math.min(85, Math.floor((fullContent.length / 2000) * 100));
+                  if (estimatedProgress < 10) estimatedProgress = Math.max(10, chunkCount * 2);
+                  
+                  console.log(`[DEBUG] Sending progress update: ${estimatedProgress}% (chunk ${chunkCount}, content: ${fullContent.length} chars)`);
+                  
+                  progressCallback({
+                    type: 'streaming',
+                    progress: estimatedProgress,
+                    reasoning: fullContent,
+                    message: `Analyzing... (${Math.floor(fullContent.length / 100)} insights gathered)`,
+                    sources: []
+                  });
+                  
+                  lastProgressUpdate = now;
                 }
-              } catch (parseError) {
-                console.warn('Failed to parse streaming chunk:', parseError)
               }
+            } catch (parseError) {
+              console.warn('[DEBUG] Failed to parse streaming chunk:', parseError);
             }
           }
         }
-      } finally {
-        reader.releaseLock()
       }
-
-      // Ensure we have complete content
-      console.log('[DEBUG] Final content check:', {
-        contentLength: fullContent.length,
-        isComplete: isComplete,
-        lastChars: fullContent.slice(-50)
-      })
-
-      // Send completion update with full content
-      if (progressCallback) {
-        console.log('[DEBUG] Sending completion update with full content')
-        progressCallback({
-          type: 'complete',
-          message: 'Analysis complete!',
-          progress: 100,
-          reasoning: fullContent
-        })
-      }
-
-      const responseTime = Date.now() - startTime
-      console.log('[DEBUG] Streaming request completed:', {
-        responseTime: `${responseTime}ms`,
-        contentLength: fullContent.length,
-        totalChunks: progressCount,
-        isComplete: isComplete
-      })
-
-      // Return in expected format
-      return {
-        id: `streaming_${Date.now()}`,
-        model: data.model,
-        choices: [{
-          message: {
-            content: fullContent
-          }
-        }],
-        usage: {
-          total_tokens: Math.ceil(fullContent.length / 4) // Rough estimate
-        }
-      }
-
-    } catch (error: any) {
-      const responseTime = Date.now() - startTime
-      console.error('[DEBUG] Streaming request failed:', {
-        fullUrl: fullUrl,
-        error: error.message,
-        responseTime: `${responseTime}ms`
-      })
-      throw error
+    } finally {
+      reader.releaseLock();
     }
+
+    // Check if content appears complete
+    const isComplete = fullContent.length > 100 && (
+      fullContent.trim().endsWith('.') || 
+      fullContent.trim().endsWith('!') || 
+      fullContent.trim().endsWith('?') ||
+      fullContent.includes('</think>')
+    );
+
+    console.log('[DEBUG] Final content check:', {
+      contentLength: fullContent.length,
+      isComplete: isComplete,
+      lastChars: fullContent.slice(-100)
+    });
+
+    // Send completion update
+    if (progressCallback) {
+      console.log('[DEBUG] Sending completion update with full content');
+      progressCallback({
+        type: 'complete',
+        progress: 100,
+        reasoning: fullContent,
+        message: 'Analysis complete!',
+        sources: []
+      });
+    }
+
+    const responseTime = Date.now() - startTime;
+    console.log('[DEBUG] Streaming request completed:', {
+      responseTime: `${responseTime}ms`,
+      contentLength: fullContent.length,
+      totalChunks: chunkCount,
+      isComplete: isComplete
+    });
+
+    if (!isComplete) {
+      console.warn('[DEBUG] ⚠️ RESEARCH CONTENT MAY BE TRUNCATED:', {
+        contentLength: fullContent.length,
+        lastChars: fullContent.slice(-100),
+        tokensUsed: Math.ceil(fullContent.length / 4),
+        maxTokens: data.max_tokens
+      });
+    }
+
+    // Return a mock response structure that matches what the calling code expects
+    return {
+      id: `stream_${Date.now()}`,
+      model: data.model,
+      choices: [{
+        message: {
+          content: fullContent
+        }
+      }],
+      usage: {
+        total_tokens: Math.ceil(fullContent.length / 4)
+      }
+    };
   }
 
   public async basicQuery(query: string, context: QueryContext): Promise<PerplexityResponse> {
@@ -507,195 +500,121 @@ Response Guidelines:
   }
 
   public async reasoningQuery(query: string, context?: string[] | ConversationEntry[], progressCallback?: (update: ProgressUpdate) => void): Promise<PerplexityResponse> {
-    console.log('🔥 NEW STREAMING REASONING QUERY METHOD CALLED!', { query, contextLength: context?.length });
+    console.log('🔥 Optimized reasoning query called:', { query, contextLength: context?.length });
     
     const messages: any[] = [];
     const progressUpdates: ProgressUpdate[] = [];
     
-    // Add system message
-    const systemPrompt = `You are Monday, an AI learning companion with advanced reasoning capabilities.
+    // Enhanced system prompt for reasoning
+    const systemPrompt = `You are Monday, an AI assistant with advanced reasoning capabilities.
 
-Your Reasoning Approach:
-- Break down complex problems into clear, logical steps
-- Show your thinking process transparently
-- Provide confidence levels for each reasoning step
-- Connect concepts and show relationships
-- Use analogies and examples to make concepts accessible
+REASONING INSTRUCTIONS:
+- Think through the problem step-by-step in <think> tags
+- Show your complete reasoning process including analysis, connections, and conclusions
+- After your reasoning, provide a clear, comprehensive final answer
+- Your final answer should be well-structured and complete
+- Always finish your thoughts completely - never cut off mid-sentence
 
-Response Format:
-- Start with a brief overview of your approach
-- Present 3-5 clear reasoning steps
-- Each step should be conversational and TTS-friendly
-- End with synthesis and suggestions for further exploration
-- IMPORTANT: Always complete your thoughts - don't leave sentences unfinished
-- Structure your response to fit within the token limit while being complete
+RESPONSE STRUCTURE:
+<think>
+[Your complete step-by-step reasoning process here]
+</think>
 
-Educational Focus:
-- Help users understand not just what, but why and how
-- Encourage critical thinking
-- Make complex topics approachable
-- Ensure every response has a clear conclusion`;
+[Your final, refined answer here - this should be comprehensive and well-formatted]`;
 
     messages.push({
       role: 'system',
       content: systemPrompt
     });
-    
-    console.log('🔥 Processing context...', { hasContext: !!context, contextType: typeof context?.[0] });
-    
-    // Process context with new structure
-    if (context && Array.isArray(context)) {
-      let structuredContext: ConversationEntry[];
-      
-      // Handle both old string format and new ConversationEntry format
-      if (context.length > 0 && typeof context[0] === 'string') {
-        console.log('🔥 Converting legacy context format');
-        structuredContext = ContextCleaner.convertLegacyContext(context as string[]);
-      } else {
-        console.log('🔥 Using new context format');
-        structuredContext = context as ConversationEntry[];
-      }
-      
-      console.log('🔥 Structured context:', structuredContext);
-      
-      // Clean the context
-      const cleanedMessages = ContextCleaner.validateAndCleanContext(structuredContext);
-      console.log('🔥 Cleaned messages:', cleanedMessages);
-      
-      // Ensure perfect alternation
-      const alternatingMessages = this.ensureAlternation(cleanedMessages);
-      console.log('🔥 Alternating messages:', alternatingMessages);
-      
-      // Add to messages
-      messages.push(...alternatingMessages);
+
+    // Add context with proper role alternation
+    if (context && context.length > 0) {
+      const cleanedContext = ContextCleaner.validateAndCleanContext(context as ConversationEntry[]);
+      const alternatedMessages = this.ensureAlternation(cleanedContext);
+      messages.push(...alternatedMessages);
     }
-    
-    // Add current query
+
+    // Add the user query
     messages.push({
       role: 'user',
-      content: `Please think through this step by step: ${query}`
+      content: query
     });
-    
-    console.log('🔥 Final messages before validation:', messages);
-    
-    // Final validation
-    this.validateMessageStructure(messages);
-    
-    // Log for debugging
-    this.logApiRequest('/chat/completions', {
-      model: 'sonar-reasoning-pro',
-      messages: messages
-    });
-    
-    const requestData = {
-      model: 'sonar-reasoning-pro',
-      messages: messages,
-      max_tokens: 600, // INCREASED from 400 to ensure complete responses
-      temperature: 0.2,
-      stream: true // Enable streaming for progressive display
-    };
 
-    // Send initial progress update
-    if (progressCallback) {
-      const initialUpdate: ProgressUpdate = {
-        type: 'thinking',
-        message: `I'm thinking through ${query.replace(/^(please\s+)?think\s+(through\s+|about\s+)?/i, '').trim()} step by step. Let me work through this systematically.`,
-        progress: 10
-      };
-      progressUpdates.push(initialUpdate);
-      progressCallback(initialUpdate);
-    }
+    console.log('[DEBUG] Reasoning query request:', {
+      model: 'sonar-reasoning-pro',
+      messageCount: messages.length,
+      maxTokens: 2000, // Significantly increased for complete responses
+      query: query.substring(0, 100)
+    });
 
     try {
-      const result = await this.makeStreamingRequest('/chat/completions', requestData, (update) => {
-        // Override update type for reasoning
-        const reasoningUpdate: ProgressUpdate = {
-          ...update,
-          type: update.type === 'thinking' ? 'synthesizing' : update.type,
-          message: update.type === 'thinking' ? 'Synthesizing reasoning findings...' : update.message
-        };
-        progressUpdates.push(reasoningUpdate);
-        if (progressCallback) progressCallback(reasoningUpdate);
-      });
-      
-      const fullContent = result.choices?.[0]?.message?.content || 'No response generated';
-      
-      // Check if content appears to be truncated
-      const seemsTruncated = fullContent.length > 50 && (
-        !fullContent.trim().endsWith('.') && 
-        !fullContent.trim().endsWith('!') && 
-        !fullContent.trim().endsWith('?') &&
-        !fullContent.trim().endsWith('</think>')
-      );
-      
-      if (seemsTruncated) {
-        console.warn('[DEBUG] ⚠️ REASONING CONTENT MAY BE TRUNCATED:', {
-          contentLength: fullContent.length,
-          lastChars: fullContent.slice(-100),
-          tokensUsed: result.usage?.total_tokens || 0,
-          maxTokens: requestData.max_tokens
-        });
-      } else {
-        console.log('[DEBUG] ✅ Reasoning content appears complete:', {
-          contentLength: fullContent.length,
-          tokensUsed: result.usage?.total_tokens || 0,
-          maxTokens: requestData.max_tokens
-        });
-      }
-      
-      // Create a thinking message for TTS and main panel
-      const topicName = query.replace(/^(please\s+)?think\s+(through\s+|about\s+)?/i, '').trim();
-      const thinkingMessage = `I'm going to think through ${topicName} step by step. Let me break this down systematically and analyze the different aspects, approaches, and key considerations. I'll work through this methodically to give you a comprehensive understanding.`;
-      
-      console.log('🎯 Generated thinking message:', {
-        topicName: topicName,
-        messageLength: thinkingMessage.length,
-        message: thinkingMessage.substring(0, 100)
-      });
-      
-      // Generate a final response preview from the reasoning content
-      let finalPreview = '';
-      if (fullContent && fullContent.length > 100) {
-        // Extract key insights from the reasoning for the preview
-        const cleanReasoning = fullContent.replace(/<think>|<\/think>/g, '').trim();
-        const sentences = cleanReasoning.split(/[.!?]+/).filter(s => s.trim().length > 20);
-        
-        if (sentences.length >= 3) {
-          // Take key sentences and create a summary
-          const keyPoints = sentences.slice(0, 3).map(s => s.trim()).join('. ');
-          finalPreview = `Based on my analysis: ${keyPoints}. I've broken this down into clear steps for you to explore.`;
-        } else {
-          finalPreview = `I've analyzed ${query.replace(/^(please\s+)?think\s+(through\s+|about\s+)?/i, '').trim()} and broken it down into logical steps. The reasoning process reveals key insights about the different approaches and their applications.`;
+      const response = await this.makeStreamingRequest('/chat/completions', {
+        model: 'sonar-reasoning-pro',
+        messages: messages,
+        max_tokens: 2000, // Increased from 600 to 2000 tokens
+        temperature: 0.3,
+        top_p: 0.9,
+        stream: true,
+        web_search_options: {
+          search_context_size: "high" // Use high context for reasoning
         }
-      } else {
-        finalPreview = `I've completed my analysis of ${query.replace(/^(please\s+)?think\s+(through\s+|about\s+)?/i, '').trim()}. The reasoning process is now available for you to review.`;
-      }
+      }, progressCallback);
+
+      // Parse the reasoning response to extract both thinking and final answer
+      const parsedResponse = this.parseReasoningResponse(response.content);
       
-      console.log('🎯 Generated final preview:', {
-        previewLength: finalPreview.length,
-        preview: finalPreview.substring(0, 100)
+      console.log('[DEBUG] Reasoning response parsed:', {
+        hasThinking: !!parsedResponse.thinking,
+        hasFinalAnswer: !!parsedResponse.finalAnswer,
+        thinkingLength: parsedResponse.thinking?.length || 0,
+        finalAnswerLength: parsedResponse.finalAnswer?.length || 0,
+        totalLength: response.content.length
       });
-      
+
       return {
-        id: result.id || 'reasoning_query',
-        model: result.model || 'sonar-reasoning-pro',
-        content: thinkingMessage, // Short thinking message for TTS
-        fullContent: fullContent, // Full reasoning for progressive display
-        finalPreview: finalPreview, // Final response preview for TTS after completion
-        citations: this.extractCitations(result),
-        reasoning: this.extractReasoningSteps(fullContent),
+        id: `reasoning_${Date.now()}`,
+        model: 'sonar-reasoning-pro',
+        content: parsedResponse.finalAnswer || response.content, // Use final answer for TTS
+        fullContent: response.content, // Keep full content for display
+        reasoning: parsedResponse.thinking ? this.extractReasoningSteps(parsedResponse.thinking) : undefined, // Convert to ReasoningStep[]
+        sources: response.sources || [],
         metadata: {
-          tokensUsed: result.usage?.total_tokens || 0,
+          tokensUsed: response.usage?.total_tokens || 0,
           responseTime: 0,
-          isThinking: true, // Flag to indicate this is a thinking response
+          isThinking: true,
           isStreaming: true,
-          progressUpdates: progressUpdates
+          ttsMessage: parsedResponse.finalAnswer ? 'Analysis complete! Here are my findings.' : 'I\'m thinking through this step by step.'
         }
       };
-    } catch (error: any) {
-      console.error('Perplexity API Error:', error.response?.data || error.message);
+    } catch (error) {
+      console.error('[ERROR] Reasoning query failed:', error);
       throw error;
     }
+  }
+
+  // New method to parse reasoning responses
+  private parseReasoningResponse(content: string): { thinking?: string; finalAnswer?: string } {
+    const thinkRegex = /<think>([\s\S]*?)<\/think>/;
+    const thinkMatch = content.match(thinkRegex);
+    
+    let thinking: string | undefined;
+    let finalAnswer: string | undefined;
+    
+    if (thinkMatch) {
+      thinking = thinkMatch[1].trim();
+      // Extract content after </think> tag as final answer
+      const afterThink = content.split('</think>')[1];
+      if (afterThink && afterThink.trim()) {
+        finalAnswer = afterThink.trim();
+      }
+    }
+    
+    // If no think tags found, treat entire content as final answer
+    if (!thinking && !finalAnswer) {
+      finalAnswer = content;
+    }
+    
+    return { thinking, finalAnswer };
   }
 
   public async deepResearch(query: string, context?: string[] | ConversationEntry[], progressCallback?: (update: ProgressUpdate) => void): Promise<PerplexityResponse> {
@@ -704,220 +623,84 @@ Educational Focus:
     const messages: any[] = [];
     const progressUpdates: ProgressUpdate[] = [];
     
-    // Add system message - trimmed to essential instructions
-    const systemPrompt = `You are Monday, conducting focused research analysis.
+    // Enhanced system prompt for research
+    const systemPrompt = `You are Monday, conducting comprehensive research analysis.
 
-Research Focus:
-- Synthesize key information from high-quality sources
-- Present clear findings with source backing
-- Focus on most relevant and recent information
-- Keep responses structured but concise
+RESEARCH INSTRUCTIONS:
+- Conduct thorough research using multiple high-quality sources
+- Synthesize information from diverse perspectives
+- Provide comprehensive analysis with proper citations
+- Structure your response clearly with sections and key findings
+- Always complete your analysis - never cut off mid-sentence
 
-Response Structure:
+RESPONSE STRUCTURE:
 - Opening: Brief context and research scope
-- Main findings: 3-4 key insights with source backing
-- Analysis: Critical evaluation and synthesis
-- Implications: Broader significance and applications
-- Conclusion: Summary and further research directions
-- IMPORTANT: Always complete your analysis - don't leave thoughts unfinished
+- Main findings: Key insights with source backing
+- Analysis: Synthesis of information and implications
+- Conclusion: Summary and recommendations for further exploration
 
-Voice-Friendly Delivery:
-Response Format:
-- Brief context and scope
-- 2-3 key insights with sources
-- Critical evaluation
-- Practical implications
-- Brief conclusion
-- First, show your thinking process in <think> tags
-- Then provide the final research answer
-- Include sources and citations
-- Keep total response under 1000 words
-
-Style and Delivery:
-- Use clear, flowing language suitable for TTS
-- Break up long sections with natural pauses
-- Avoid excessive technical jargon without explanation
-- Maintain conversational tone despite depth
-- Ensure every response has a clear conclusion`;
+Focus on accuracy, depth, and practical insights.`;
 
     messages.push({
       role: 'system',
       content: systemPrompt
     });
 
-    // Process context more efficiently
-    if (context && Array.isArray(context)) {
-      let structuredContext: ConversationEntry[];
-      
-      if (context.length > 0 && typeof context[0] === 'string') {
-        structuredContext = ContextCleaner.convertLegacyContext(context as string[]);
-      } else {
-        structuredContext = context as ConversationEntry[];
-      }
-      
-      // Only keep last 2-3 exchanges for context to reduce tokens
-      const recentContext = structuredContext.slice(-4);
-      const cleanedMessages = ContextCleaner.validateAndCleanContext(recentContext);
-      const alternatingMessages = this.ensureAlternation(cleanedMessages);
-      messages.push(...alternatingMessages);
+    // Add context with proper role alternation
+    if (context && context.length > 0) {
+      const cleanedContext = ContextCleaner.validateAndCleanContext(context as ConversationEntry[]);
+      const alternatedMessages = this.ensureAlternation(cleanedContext);
+      messages.push(...alternatedMessages);
     }
 
-    // Add the user query with focus on efficiency
+    // Add the user query
     messages.push({
       role: 'user',
-      content: `Conduct a comprehensive research analysis on: ${query}. First show your thinking process in <think> tags, then provide the final research answer.`
+      content: query
     });
 
-    // Log token usage breakdown
-    const systemTokens = Math.ceil(systemPrompt.length / 4);
-    const contextTokens = messages.slice(1, -1).reduce((sum, msg) => sum + Math.ceil(msg.content.length / 4), 0);
-    const queryTokens = Math.ceil(messages[messages.length - 1].content.length / 4);
-    
-    console.log('📊 Deep Research Token Usage:', {
-      systemPrompt: `${systemTokens} tokens`,
-      context: `${contextTokens} tokens (${messages.length - 2} messages)`,
-      query: `${queryTokens} tokens`,
-      totalInput: `${systemTokens + contextTokens + queryTokens} tokens`,
-      maxOutput: '1000 tokens'
-    });
-
-    // Validate message structure
-    this.validateMessageStructure(messages);
-    
-    // Log for debugging
-    this.logApiRequest('/chat/completions', {
+    console.log('[DEBUG] Deep research request:', {
       model: 'sonar-deep-research',
-      messages: messages
+      messageCount: messages.length,
+      maxTokens: 2500, // Increased for comprehensive research
+      query: query.substring(0, 100)
     });
-
-    // Send initial progress update
-    if (progressCallback) {
-      const initialUpdate: ProgressUpdate = {
-        type: 'researching',
-        message: `I'm Researching ${query.replace(/^(please\s+)?(research\s+|investigate\s+)?/i, '').trim()}...`,
-        progress: 5,
-        sources: []
-      };
-      progressUpdates.push(initialUpdate);
-      progressCallback(initialUpdate);
-
-      // Simulate research phases with progress updates
-      setTimeout(() => {
-        const searchUpdate: ProgressUpdate = {
-          type: 'searching',
-          message: 'Searching through academic databases and reliable sources...',
-          progress: 25,
-          sources: ['Academic databases', 'Research papers', 'Expert publications']
-        };
-        progressUpdates.push(searchUpdate);
-        progressCallback(searchUpdate);
-      }, 1000);
-
-      setTimeout(() => {
-        const analyzeUpdate: ProgressUpdate = {
-          type: 'analyzing',
-          message: 'Analyzing source credibility and synthesizing findings...',
-          progress: 60,
-          sources: ['Peer-reviewed sources', 'Recent publications', 'Expert opinions']
-        };
-        progressUpdates.push(analyzeUpdate);
-        progressCallback(analyzeUpdate);
-      }, 3000);
-    }
-
-    const requestData = {
-      model: 'sonar-deep-research',
-      messages: messages,
-      max_tokens: 700, // INCREASED from 500 to ensure complete responses
-      max_tokens: 1000, // Increased for full research response
-      temperature: 0.3,
-      stream: true
-    };
 
     try {
-      const result = await this.makeStreamingRequest('/chat/completions', requestData, (update) => {
-        // Only send progress updates at key milestones to avoid spam
-        if (update.progress === 25 || update.progress === 60 || update.progress === 100) {
-          const researchUpdate: ProgressUpdate = {
-            ...update,
-            type: update.type === 'thinking' ? 'synthesizing' : update.type,
-            message: update.type === 'thinking' ? 'Synthesizing findings...' : update.message
-          };
-          progressUpdates.push(researchUpdate);
-          if (progressCallback) progressCallback(researchUpdate);
+      const response = await this.makeStreamingRequest('/chat/completions', {
+        model: 'sonar-deep-research',
+        messages: messages,
+        max_tokens: 2500, // Increased from 700 to 2500 tokens for comprehensive research
+        temperature: 0.2,
+        top_p: 0.9,
+        stream: true,
+        web_search_options: {
+          search_context_size: "high" // Use high context for deep research
         }
+      }, progressCallback);
+
+      console.log('[DEBUG] Deep research response received:', {
+        contentLength: response.content?.length || 0,
+        hasContent: !!response.content,
+        totalTokens: response.usage?.total_tokens || 0
       });
-      
-      const fullContent = result.choices?.[0]?.message?.content || 'No response generated';
-      
-      // Check if content appears to be truncated
-      const seemsTruncated = fullContent.length > 50 && (
-        !fullContent.trim().endsWith('.') && 
-        !fullContent.trim().endsWith('!') && 
-        !fullContent.trim().endsWith('?')
-      );
-      
-      if (seemsTruncated) {
-        console.warn('[DEBUG] ⚠️ RESEARCH CONTENT MAY BE TRUNCATED:', {
-          contentLength: fullContent.length,
-          lastChars: fullContent.slice(-100),
-          tokensUsed: result.usage?.total_tokens || 0,
-          maxTokens: requestData.max_tokens
-        });
-      } else {
-        console.log('[DEBUG] ✅ Research content appears complete:', {
-          contentLength: fullContent.length,
-          tokensUsed: result.usage?.total_tokens || 0,
-          maxTokens: requestData.max_tokens
-        });
-      }
-      
-      // Create a research message for TTS and main panel
-      const topicName = query.replace(/^(please\s+)?(research\s+|investigate\s+)?/i, '').trim();
-      const researchMessage = `I'm going to conduct comprehensive research on ${topicName}. Let me gather information from multiple high-quality sources, analyze different perspectives, and synthesize the findings. I'll examine the latest developments, key insights, and provide you with a thorough analysis.`;
-      
-      console.log('🎯 Generated research message:', {
-        topicName: topicName,
-        messageLength: researchMessage.length,
-        message: researchMessage.substring(0, 100)
-      });
-      // Extract thinking process and final answer
-      const thinkingMatch = fullContent.match(/<think>([\s\S]*?)<\/think>/);
-      const thinkingProcess = thinkingMatch ? thinkingMatch[1].trim() : '';
-      const finalAnswer = fullContent.replace(/<think>[\s\S]*?<\/think>/, '').trim();
-      
-      // Log final token usage
-      const outputTokens = Math.ceil(fullContent.length / 4);
-      console.log('📊 Deep Research Complete:', {
-        inputTokens: systemTokens + contextTokens + queryTokens,
-        outputTokens: outputTokens,
-        totalTokens: systemTokens + contextTokens + queryTokens + outputTokens,
-        responseLength: fullContent.length,
-        hasThinkingProcess: !!thinkingProcess,
-        hasFinalAnswer: !!finalAnswer
-      });
-      
-      // Create a short TTS response from the final answer
-      const shortResponse = this.createShortTTSResponse(finalAnswer, query);
-      
+
       return {
-        id: result.id || 'research_query',
-        model: result.model || 'sonar-deep-research',
-        content: shortResponse, // Short message for TTS
-        fullContent: finalAnswer, // Final research answer for main panel
-        thinkingProcess: thinkingProcess, // Thinking process for thinking panel
-        citations: this.extractCitations(result),
-        sources: this.extractSources(result),
+        id: `research_${Date.now()}`,
+        model: 'sonar-deep-research',
+        content: response.content || 'Research completed. Please check the full analysis.',
+        fullContent: response.content,
+        sources: response.sources || [],
         metadata: {
-          tokensUsed: result.usage?.total_tokens || 0,
+          tokensUsed: response.usage?.total_tokens || 0,
           responseTime: 0,
           isResearching: true,
           isStreaming: true,
-          progressUpdates: progressUpdates
+          ttsMessage: 'I\'ve completed comprehensive research on this topic. Here\'s what I found.'
         }
       };
-    } catch (error: any) {
-      console.error('Perplexity API Error:', error.response?.data || error.message);
+    } catch (error) {
+      console.error('[ERROR] Deep research failed:', error);
       throw error;
     }
   }

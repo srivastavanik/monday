@@ -69,20 +69,10 @@ class CommandValidator {
       "i'm monday",
       "hello, i'm monday", 
       "monday here",
-      // Removed overly broad terms that block user requests:
-      // "quantum mechanics", // TOO BROAD - users can ask about this
       "let me explain",
       "that's a great question",
       "would you like to know more",
       "in the quantum world",
-      "quantum entanglement",
-      "superposition",
-      "wave function",
-      "schrödinger",
-      "heisenberg",
-      "uncertainty principle",
-      "quantum computing",
-      "quantum field theory",
       "let me share what i discovered",
       "i found some great information",
       "here's what i learned",
@@ -92,7 +82,13 @@ class CommandValidator {
       "i've gathered more details",
       "hey there. i've gathered",
       "that's a great topic to think through",
-      "while i'm having some connectivity issues"
+      "while i'm having some connectivity issues",
+      // Only keep very specific AI response phrases:
+      "i can help you understand",
+      "here's what you need to know",
+      "according to my analysis",
+      "i've found that",
+      "thanks for sharing your curiosity"
     ];
   }
   

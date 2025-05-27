@@ -8,6 +8,7 @@ import LoadingOverlay from './components/LoadingOverlay'
 import ErrorBoundary from './components/ErrorBoundary'
 import DiagnosticOverlay from './components/DiagnosticOverlay'
 import StaticInfoPanel from './components/StaticInfoPanel'
+import ProgressivePanel from './components/ProgressivePanel'
 import { useMondayStore } from './store/mondayStore'
 import { useVoiceSystem } from './hooks/useVoiceSystem'
 import { useWebSocketConnection } from './hooks/useWebSocket'
@@ -33,6 +34,15 @@ const App: React.FC = () => {
     content: '',
     citations: [],
     model: ''
+  })
+  const [progressivePanelData, setProgressivePanelData] = useState<{
+    isVisible: boolean
+    title: string
+    type: 'reasoning' | 'research' | null
+  }>({
+    isVisible: false,
+    title: '',
+    type: null
   })
 
   const { 
@@ -265,10 +275,15 @@ const App: React.FC = () => {
     const handleReasoningProgress = async (data: any) => {
       console.log('🔄 App: Reasoning progress update:', data)
       
-      // Set processing flag when reasoning starts
-      if (data.update?.progress === 10 && !isProcessingReasoning) {
+      // Set processing flag and show progressive panel when reasoning starts
+      if (data.update?.progress === 5 && !isProcessingReasoning) {
         setIsProcessingReasoning(true)
-        console.log('🧠 App: Started reasoning process')
+        setProgressivePanelData({
+          isVisible: true,
+          title: 'Monday\'s Reasoning Process',
+          type: 'reasoning'
+        })
+        console.log('🧠 App: Started reasoning process with progressive panel')
       }
       
       // Update static panel with real-time reasoning content (but don't trigger TTS during progress)
@@ -314,7 +329,7 @@ const App: React.FC = () => {
           // Update static panel with paragraph-level reasoning content
           setStaticPanelData({
             isVisible: true,
-            title: `Monday's Reasoning Process (${data.update.progress || 0}% complete)`,
+            title: `Monday\'s Reasoning Process (${data.update.progress || 0}% complete)`,
             content: displayContent,
             citations: [],
             model: data.model || 'sonar-reasoning-pro'
@@ -356,6 +371,9 @@ const App: React.FC = () => {
       if (data.update?.type === 'complete' && data.update?.progress === 100 && isProcessingReasoning) {
         console.log('🔓 App: Reasoning completed, displaying full final response')
         setIsProcessingReasoning(false) // Reset processing flag
+        
+        // Hide progressive panel
+        setProgressivePanelData(prev => ({ ...prev, isVisible: false }))
         
         // Get the complete final reasoning content
         let finalContent = data.update.reasoning || ''
@@ -428,6 +446,16 @@ const App: React.FC = () => {
     const handleResearchProgress = async (data: any) => {
       console.log('🔍 App: Research progress update:', data)
       
+      // Show progressive panel when research starts
+      if (data.update?.progress === 5) {
+        setProgressivePanelData({
+          isVisible: true,
+          title: 'Monday\'s Research Analysis',
+          type: 'research'
+        })
+        console.log('🔍 App: Started research process with progressive panel')
+      }
+      
       // Update static panel with real-time research content
       if (data.update?.reasoning) {
         // PARAGRAPH-LEVEL ROTATION: Show the latest complete paragraph
@@ -456,7 +484,7 @@ const App: React.FC = () => {
         // Update static panel with paragraph-level research content
         setStaticPanelData({
           isVisible: true,
-          title: `Monday's Research Analysis (${data.update.progress || 0}% complete)`,
+          title: `Monday\'s Research Analysis (${data.update.progress || 0}% complete)`,
           content: displayContent,
           citations: data.update?.sources || [],
           model: data.model || 'sonar-deep-research'
@@ -487,13 +515,16 @@ const App: React.FC = () => {
       if (data.update?.type === 'complete' && data.update?.progress === 100) {
         console.log('🔓 App: Research completed, displaying full final response')
         
+        // Hide progressive panel
+        setProgressivePanelData(prev => ({ ...prev, isVisible: false }))
+        
         // Get the complete final research content
         const finalContent = data.update?.reasoning || ''
         
         // Display the COMPLETE final response in the static panel
         setStaticPanelData({
           isVisible: true,
-          title: 'Monday's Complete Research Analysis ✅',
+          title: 'Monday\'s Complete Research Analysis ✅',
           content: finalContent, // FULL CONTENT, not a summary
           citations: data.update?.sources || [],
           model: data.model || 'sonar-deep-research'
@@ -616,7 +647,7 @@ const App: React.FC = () => {
     const isExplicitTrigger = normalizedCommand.includes('hey monday')
     const shouldProcess = isExplicitTrigger || conversationActive
     
-    // CRITICAL: Filter out Monday's own voice to prevent feedback loops
+    // CRITICAL: Filter out Monday\'s own voice to prevent feedback loops
     const isMondayVoice = normalizedCommand.includes('think through') || 
                          normalizedCommand.includes('machine learning algorithms step by step') ||
                          normalizedCommand.includes('break down think about') ||
@@ -641,8 +672,15 @@ const App: React.FC = () => {
 
     if (shouldProcess) {
       // CRITICAL: Lock microphone IMMEDIATELY for reasoning/research commands
-      const isReasoningCommand = normalizedCommand.includes('think') || normalizedCommand.includes('reason')
-      const isResearchCommand = normalizedCommand.includes('research') || normalizedCommand.includes('investigate')
+      // Only lock for explicit reasoning/research requests, not basic commands
+      const isReasoningCommand = (normalizedCommand.includes('think about') || 
+                                 normalizedCommand.includes('think through') ||
+                                 normalizedCommand.includes('reason about') ||
+                                 normalizedCommand.includes('reasoning')) &&
+                                 !normalizedCommand.includes('hey monday')
+      const isResearchCommand = (normalizedCommand.includes('research') || 
+                                normalizedCommand.includes('investigate')) &&
+                                !normalizedCommand.includes('hey monday')
       
       if (isReasoningCommand) {
         console.log('🔇 App: IMMEDIATELY locking microphone for reasoning command')
@@ -654,6 +692,8 @@ const App: React.FC = () => {
         lockMicrophoneForProcess('research').catch(error => {
           console.error('🔇 App: Failed to lock microphone for research:', error)
         })
+      } else {
+        console.log('🔇 App: Basic command - no microphone lock needed')
       }
       
       // If it's an explicit trigger, set conversation active
@@ -731,6 +771,18 @@ const App: React.FC = () => {
         height: '100vh', 
         backgroundColor: 'var(--offblack)' 
       }}>
+        <style>
+          {`
+            @keyframes spin {
+              0% { transform: rotate(0deg); }
+              100% { transform: rotate(360deg); }
+            }
+            @keyframes pulse {
+              0%, 100% { opacity: 1; }
+              50% { opacity: 0.5; }
+            }
+          `}
+        </style>
         <Canvas
           camera={{ 
             position: [0, 1.6, 0],
@@ -1093,6 +1145,14 @@ const App: React.FC = () => {
           model={staticPanelData.model}
           isVisible={staticPanelData.isVisible}
           onClose={() => setStaticPanelData(prev => ({ ...prev, isVisible: false }))}
+        />
+
+        {/* Progressive Research/Reasoning Panel */}
+        <ProgressivePanel
+          id="progressive-analysis"
+          title={progressivePanelData.title}
+          isVisible={progressivePanelData.isVisible}
+          onClose={() => setProgressivePanelData(prev => ({ ...prev, isVisible: false }))}
         />
       </div>
     </ErrorBoundary>

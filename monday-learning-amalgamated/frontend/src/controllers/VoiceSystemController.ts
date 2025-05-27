@@ -1005,6 +1005,14 @@ class VoiceSystemController {
   
   public async handleTTSResponse(text: string): Promise<void> {
     console.log('VoiceController: 🔊 TTS RESPONSE WITH STRONG AUDIO ISOLATION...')
+    console.log('VoiceController: 🔍 TTS Text Analysis:', {
+      text: text.substring(0, 100),
+      length: text.length,
+      containsThinkingThrough: text.toLowerCase().includes('thinking through'),
+      containsStepByStep: text.toLowerCase().includes('step by step'),
+      containsResearching: text.toLowerCase().includes('researching'),
+      containsGatheringInfo: text.toLowerCase().includes('gathering information')
+    })
     
     // RECORD TTS OUTPUT for validation against future commands
     this.commandValidator.recordTTSOutput(text)
@@ -1015,16 +1023,44 @@ class VoiceSystemController {
       this.onConversationChange?.(true)
     }
     
-    // CRITICAL: Check if this is a reasoning/research process
-    const isReasoningProcess = text.toLowerCase().includes('thinking through') || 
-                              text.toLowerCase().includes('working through') ||
-                              text.toLowerCase().includes('step by step')
-    const isResearchProcess = text.toLowerCase().includes('researching') ||
-                             text.toLowerCase().includes('gathering information')
+    // CRITICAL: Check if this is ACTUALLY a reasoning/research process
+    // Only detect if the TTS explicitly mentions these specific processes
+    const isReasoningProcess = text.toLowerCase().includes('thinking through') && 
+                              (text.toLowerCase().includes('step by step') || 
+                               text.toLowerCase().includes('systematically') ||
+                               text.toLowerCase().includes('reasoning process'))
+    const isResearchProcess = text.toLowerCase().includes('researching') && 
+                             (text.toLowerCase().includes('gathering information') ||
+                              text.toLowerCase().includes('comprehensive research') ||
+                              text.toLowerCase().includes('research analysis'))
     
-    if (isReasoningProcess || isResearchProcess) {
+    // Additional check: Only lock for extended processes, not basic responses
+    const isExtendedProcess = isReasoningProcess || isResearchProcess
+    
+    console.log('VoiceController: 🔍 Process Detection Results:', {
+      isReasoningProcess,
+      isResearchProcess,
+      isExtendedProcess,
+      willLockMicrophone: isExtendedProcess,
+      currentlyLocked: this.isMicrophoneLocked,
+      globalTTSLock: this.globalTTSLock
+    })
+    
+    // CRITICAL FIX: If this is NOT an extended process, clear any existing locks
+    if (!isExtendedProcess) {
+      console.log('VoiceController: 🔓 BASIC TTS - Clearing any existing extended locks')
+      if (this.ttsLockTimeout) {
+        clearTimeout(this.ttsLockTimeout)
+        this.ttsLockTimeout = null
+      }
+      // Don't clear the locks yet - we'll do that after TTS completes
+    }
+    
+    if (isExtendedProcess) {
       console.log('VoiceController: 🧠 REASONING/RESEARCH PROCESS DETECTED - Extended microphone lock')
       await this.lockMicrophoneForProcess(isReasoningProcess ? 'reasoning' : 'research')
+    } else {
+      console.log('VoiceController: 💬 Basic TTS response - normal microphone handling')
     }
     
     try {
@@ -1047,9 +1083,28 @@ class VoiceSystemController {
         await new Promise(resolve => setTimeout(resolve, 3000)) // Reduced to 3 seconds
       })
       
-      // STEP 5: CRITICAL - Only restart if NOT in a reasoning/research process
+      // STEP 5: CRITICAL FIX - For basic responses, force unlock regardless of previous state
+      if (!isExtendedProcess) {
+        console.log('VoiceController: 🔓 BASIC TTS - Force unlocking microphone regardless of previous state')
+        // Clear the extended locks
+        this.isMicrophoneLocked = false
+        this.globalTTSLock = false
+        if (this.ttsLockTimeout) {
+          clearTimeout(this.ttsLockTimeout)
+          this.ttsLockTimeout = null
+        }
+      }
+      
+      console.log('VoiceController: 🔍 Post-TTS State Check:', {
+        isMicrophoneLocked: this.isMicrophoneLocked,
+        globalTTSLock: this.globalTTSLock,
+        isExtendedProcess: isExtendedProcess,
+        willRestartListening: !this.isMicrophoneLocked && !this.globalTTSLock
+      })
+      
       if (!this.isMicrophoneLocked && !this.globalTTSLock) {
         // Normal TTS completion - restart listening
+        console.log('VoiceController: ✅ BASIC TTS COMPLETE - Restarting microphone for normal conversation')
         await this.transitionTo(SystemState.ACTIVE_LISTENING, async () => {
           console.log('VoiceController: 🔄 System restart after TTS isolation')
           
