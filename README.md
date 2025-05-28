@@ -1,6 +1,6 @@
 # Monday: 
 
-A voice-driven AI learning companion that operates in virtual reality, specifically designed for Oculus Quest 2/3 headsets via WebXR. The application leverages Perplexity's Sonar API ecosystem to create an immersive educational environment where knowledge materializes in three-dimensional space around the user.
+A voice-driven AI learning companion that operates in virtual reality, specifically designed for Oculus Quest 2/3 headsets via WebXR. The application leverages Perplexity's Sonar API ecosystem to create an immersive educational environment where knowledge materializes around the user.
 
 ## Implementation
 
