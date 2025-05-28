@@ -274,17 +274,8 @@ export default function MondayPerplexitySystem() {
     } else {
       // Just "Hey Monday" - activate conversation mode and wait for command
       console.log("Activating conversation mode, waiting for command");
-      // Use Web Speech API directly for better compatibility
-      if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-        try {
-          const utterance = new SpeechSynthesisUtterance("Hi! I'm Monday, your learning assistant powered by Perplexity Sonar. What would you like to dive into today?");
-          utterance.rate = 0.9;
-          utterance.volume = 0.8;
-          window.speechSynthesis.speak(utterance);
-        } catch (e) {
-          console.log("Could not speak activation response");
-        }
-      }
+      // Send activation command to get proper ElevenLabs response
+      sendVoiceCommand("", true, true);
     }
   }, [isSpeaking, stopSpeaking, resetTranscript]);
 
@@ -310,17 +301,8 @@ export default function MondayPerplexitySystem() {
       setLiveTranscript(""); // Clear live transcript
       resetTranscript();
       
-      // Only speak if we have proper permissions
-      if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-        try {
-          const utterance = new SpeechSynthesisUtterance("Goodbye! Say Hey Monday anytime you want to chat again.");
-          utterance.rate = 0.9;
-          utterance.volume = 0.8;
-          window.speechSynthesis.speak(utterance);
-        } catch (e) {
-          console.log("Could not speak goodbye message");
-        }
-      }
+      // Use ElevenLabs for goodbye message
+      speak("Goodbye! Say Hey Monday anytime you want to chat again.");
       return;
     }
 
@@ -385,10 +367,13 @@ export default function MondayPerplexitySystem() {
       setIsReceiving(true);
       setCharIndex(0);
       
-      // Speak the response immediately for hands-free operation
-      if (!isSpeaking && message.message) {
-        speak(message.message);
-      }
+      // Start speech after a brief delay to sync with text display
+      // This allows the first few characters to appear before speech starts
+      setTimeout(() => {
+        if (!isSpeaking && message.message) {
+          speak(message.message);
+        }
+      }, 100); // Small delay for better sync
     }
     
     // Update mode and other data
@@ -453,10 +438,14 @@ export default function MondayPerplexitySystem() {
   // Progressive typewriter effect for the main response (significantly sped up)
   useEffect(() => {
     if (isReceiving && fullResponseText && charIndex < fullResponseText.length) {
+      // Speed up initial characters to sync better with speech
+      const baseDelay = charIndex < 50 ? 3 : 5; // Faster for first 50 chars
+      const randomDelay = charIndex < 50 ? 2 : 5; // Less variation initially
+      
       const timeout = setTimeout(() => {
         setCurrentResponse(fullResponseText.slice(0, charIndex + 1));
         setCharIndex(charIndex + 1);
-      }, 5 + Math.random() * 5); // Reduced from 25-40ms to 5-10ms per character
+      }, baseDelay + Math.random() * randomDelay);
       return () => clearTimeout(timeout);
     } else if (fullResponseText && charIndex >= fullResponseText.length) {
       setIsReceiving(false);
@@ -567,16 +556,12 @@ export default function MondayPerplexitySystem() {
   }, [currentMode, isSpeaking, speak]);
 
   const sendVoiceCommand = useCallback((command: string, isExplicitTrigger: boolean = false, isActivation: boolean = false) => {
-    if (!wsIsConnected) {
-      setApiError("Not connected to Monday backend. Please wait for connection.");
-      return;
-    }
-
     if (isProcessingVoice && !isExplicitTrigger) {
       console.log("Already processing voice, ignoring command");
       return;
     }
 
+    // The WebSocket will handle its own connection state, no need to check here
     console.log("Sending voice command:", command);
     
     // FIRST: Detect and switch mode immediately for instant visual feedback
@@ -597,15 +582,22 @@ export default function MondayPerplexitySystem() {
     setLiveTranscript(""); // Clear live transcript when processing
 
     // Send command via WebSocket immediately
-    wsSendMessage(JSON.stringify({
-      type: "voice_command",
-      command: command,
-      conversationActive: isInConversation,
-      isExplicitTrigger: isExplicitTrigger,
-      isActivation: isActivation,
-      timestamp: Date.now()
-    }));
-  }, [wsIsConnected, wsSendMessage, isInConversation, isProcessingVoice, detectVoiceMode, switchToMode]);
+    try {
+      wsSendMessage(JSON.stringify({
+        type: "voice_command",
+        command: command,
+        conversationActive: isInConversation,
+        isExplicitTrigger: isExplicitTrigger,
+        isActivation: isActivation,
+        timestamp: Date.now()
+      }));
+    } catch (error) {
+      console.error("Failed to send voice command:", error);
+      setApiError("Failed to send command. Please check connection.");
+      setIsThinking(false);
+      setIsProcessingVoice(false);
+    }
+  }, [wsSendMessage, isInConversation, isProcessingVoice, detectVoiceMode, switchToMode]);
 
   const toggleListening = () => {
     if (!isMounted) return;
@@ -647,20 +639,20 @@ export default function MondayPerplexitySystem() {
   const getModeConfig = (mode: string) => {
     const configs = {
       "reasoning": { 
-        icon: <Brain className="w-4 h-4" />, 
-        label: "Reasoning Pro",
+          icon: <Brain className="w-4 h-4" />,
+          label: "Reasoning Pro",
         color: "from-purple-500 to-purple-700",
         description: "Deep analytical thinking"
       },
       "deep-research": { 
-        icon: <Activity className="w-4 h-4" />, 
-        label: "Deep Research",
+          icon: <Activity className="w-4 h-4" />,
+          label: "Deep Research",
         color: "from-blue-500 to-blue-700", 
         description: "Comprehensive investigation"
       },
       "basic": { 
-        icon: <Search className="w-4 h-4" />, 
-        label: "Basic",
+          icon: <Search className="w-4 h-4" />,
+          label: "Basic",
         color: "from-green-500 to-green-700",
         description: "Quick search & answers"
       }
