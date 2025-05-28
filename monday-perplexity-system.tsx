@@ -63,6 +63,7 @@ interface WebSocketMessage {
 const MONDAY_WEBSOCKET_URL = "http://localhost:3001";
 
 export default function MondayPerplexitySystem() {
+  console.log("Monday System initializing with WebSocket URL:", MONDAY_WEBSOCKET_URL);
   const [currentMode, setCurrentMode] = useState<"basic" | "reasoning" | "deep-research">("basic")
   const [currentResponse, setCurrentResponse] = useState("")
   const [fullResponseText, setFullResponseText] = useState("")
@@ -87,7 +88,7 @@ export default function MondayPerplexitySystem() {
   const [lastProcessedTranscript, setLastProcessedTranscript] = useState<string>("")
 
   // --- Text-to-Speech Hook with ElevenLabs API ---
-  const { speak, stop: stopSpeaking, isSpeaking, initializeAudioContext } = useTextToSpeech({
+  const { speak, stop: stopSpeaking, isSpeaking, initializeAudioContext, isInitialized } = useTextToSpeech({
     voiceId: "21m00Tcm4TlvDq8ikWAM", // Rachel voice
     apiKey: "sk_9454bca5ee475d45dc6e50bcb33bc3fb76f138e2191ff47d"
   });
@@ -110,9 +111,23 @@ export default function MondayPerplexitySystem() {
     },
     onError: (event) => {
       console.error("WebSocket error:", event)
-      setApiError("Failed to connect to Monday backend. Please check if the backend is running.")
+      setApiError("Failed to connect to Monday backend. Please check if the backend is running on port 3001.")
     },
   });
+
+  // Check WebSocket connection status
+  useEffect(() => {
+    console.log("WebSocket connection state changed:", { wsIsConnected, wsError });
+    if (wsError) {
+      console.error("WebSocket connection error detected:", wsError);
+      setApiError("Cannot connect to Monday backend. Please ensure the backend server is running on port 3001.");
+    } else if (wsIsConnected) {
+      console.log("WebSocket successfully connected!");
+      setApiError(null);
+    } else {
+      console.log("WebSocket not connected yet");
+    }
+  }, [wsIsConnected, wsError]);
 
   // --- Speech Recognition Hook ---
   const {
@@ -126,9 +141,10 @@ export default function MondayPerplexitySystem() {
   // Fix hydration issue by tracking mount state
   useEffect(() => {
     setIsMounted(true)
-    // Initialize audio context and start automatic listening on mount
+    // Start automatic listening immediately for hands-free operation
     if (typeof window !== 'undefined') {
-      initializeAudioContext();
+      console.log("Component mounted, starting hands-free voice recognition");
+      
       // Start listening immediately after component mounts
       if (browserSupportsSpeechRecognition && isMicrophoneAvailable) {
         startAutomaticListening();
@@ -159,110 +175,40 @@ export default function MondayPerplexitySystem() {
 
   // Enhanced speech recognition for conversation mode only
   useEffect(() => {
-    if (typeof window !== 'undefined' && 'webkitSpeechRecognition' in window && conversationMode && listening) {
-      const SpeechRecognition = window.webkitSpeechRecognition || window.SpeechRecognition;
-      const recognition = new SpeechRecognition();
-      
-      recognition.continuous = true;
-      recognition.interimResults = true;
-      recognition.lang = 'en-US';
-      
-      let finalTranscript = '';
-      let isProcessing = false;
-      let isActive = true;
-      let restartTimeout: NodeJS.Timeout;
-      
-      recognition.onstart = () => {
-        console.log("Conversation mode speech recognition started");
-      };
-      
-      recognition.onresult = (event: SpeechRecognitionEvent) => {
-        if (!isActive || !conversationMode) return;
-        
-        let interimTranscript = '';
-        
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-          const transcript = event.results[i][0].transcript;
-          
-          if (event.results[i].isFinal) {
-            finalTranscript += transcript;
-            
-            // Process final result if we have enough content
-            if (finalTranscript.trim().length > 0 && !isProcessing && isActive) {
-              isProcessing = true;
-              const cleanCommand = finalTranscript.trim();
-              
-              // Clear live transcript immediately when we get a final result
-              setLiveTranscript("");
-              
-              console.log("Conversation final result:", cleanCommand);
-              
-              // Reset for next command
-              finalTranscript = '';
-              
-              // Process the command
-              setTimeout(() => {
-                if (isActive && conversationMode) {
-                  handleContinuousConversation(cleanCommand);
-                }
-                isProcessing = false;
-              }, 100);
-            }
-          } else {
-            // Show interim results during conversation
-            interimTranscript += transcript;
-            if (isActive && conversationMode) {
-              setLiveTranscript(finalTranscript + interimTranscript);
-            }
-          }
-        }
-      };
-      
-      recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
-        if (event.error !== 'aborted' && event.error !== 'no-speech') {
-          console.error('Conversation speech recognition error:', event.error);
-        }
-        isProcessing = false;
-      };
-      
-      recognition.onend = () => {
-        console.log("Conversation speech recognition ended");
-        
-        // Auto-restart if still in conversation mode
-        if (conversationMode && isActive && listening) {
-          restartTimeout = setTimeout(() => {
-            if (conversationMode && isActive && listening) {
-              try {
-                console.log("Restarting conversation speech recognition");
-                recognition.start();
-              } catch (e) {
-                console.log('Could not restart conversation recognition:', e);
-              }
-            }
-          }, 500);
-        }
-      };
-      
-      // Start conversation recognition
-      try {
-        console.log("Starting conversation mode recognition");
-        recognition.start();
-      } catch (e) {
-        console.log('Could not start conversation recognition:', e);
-      }
-      
-      return () => {
-        console.log("Cleaning up conversation recognition");
-        isActive = false;
-        clearTimeout(restartTimeout);
-        try {
-          recognition.stop();
-        } catch (e) {
-          // Ignore cleanup errors
-        }
-      };
+    if (conversationMode && !listening && isMounted) {
+      // Use react-speech-recognition in conversation mode too
+      console.log("Starting conversation mode with react-speech-recognition");
+      SpeechRecognition.startListening({ 
+        continuous: true,
+        language: 'en-US'
+      });
     }
-  }, [conversationMode, listening]);
+  }, [conversationMode, listening, isMounted]);
+
+  // Monitor transcript changes during conversation mode
+  useEffect(() => {
+    if (conversationMode && transcript && transcript.length > 0) {
+      // Update live transcript immediately
+      setLiveTranscript(transcript);
+      
+      // Process commands after a pause (debounced)
+      const processTimeout = setTimeout(() => {
+        if (transcript && transcript.trim().length > 0) {
+          const cleanTranscript = transcript.trim();
+          console.log("Processing conversation command:", cleanTranscript);
+          
+          // Reset transcript for next command
+          resetTranscript();
+          setLiveTranscript("");
+          
+          // Handle the command
+          handleContinuousConversation(cleanTranscript);
+        }
+      }, 1500); // Wait 1.5 seconds of silence before processing
+      
+      return () => clearTimeout(processTimeout);
+    }
+  }, [transcript, conversationMode]);
 
   const startAutomaticListening = useCallback(() => {
     if (!browserSupportsSpeechRecognition || !isMicrophoneAvailable) {
@@ -322,9 +268,19 @@ export default function MondayPerplexitySystem() {
     } else {
       // Just "Hey Monday" - activate conversation mode and wait for command
       console.log("Activating conversation mode, waiting for command");
-      speak("Yes? I'm listening.");
+      // Use Web Speech API directly for better compatibility
+      if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+        try {
+          const utterance = new SpeechSynthesisUtterance("Yes? I'm listening.");
+          utterance.rate = 0.9;
+          utterance.volume = 0.8;
+          window.speechSynthesis.speak(utterance);
+        } catch (e) {
+          console.log("Could not speak activation response");
+        }
+      }
     }
-  }, [isSpeaking, stopSpeaking, speak, resetTranscript]);
+  }, [isSpeaking, stopSpeaking, resetTranscript]);
 
   const handleContinuousConversation = useCallback((fullTranscript: string) => {
     console.log("Processing continuous conversation:", fullTranscript);
@@ -347,7 +303,18 @@ export default function MondayPerplexitySystem() {
       setIsInConversation(false);
       setLiveTranscript(""); // Clear live transcript
       resetTranscript();
-      speak("Goodbye! Say Hey Monday anytime you want to chat again.");
+      
+      // Only speak if we have proper permissions
+      if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+        try {
+          const utterance = new SpeechSynthesisUtterance("Goodbye! Say Hey Monday anytime you want to chat again.");
+          utterance.rate = 0.9;
+          utterance.volume = 0.8;
+          window.speechSynthesis.speak(utterance);
+        } catch (e) {
+          console.log("Could not speak goodbye message");
+        }
+      }
       return;
     }
 
@@ -365,7 +332,7 @@ export default function MondayPerplexitySystem() {
       // Don't reset transcript or conversation mode - keep listening for next command
       sendVoiceCommand(cleanTranscript, false, false);
     }
-  }, [isSpeaking, stopSpeaking, speak, resetTranscript, isProcessingVoice]);
+  }, [isSpeaking, stopSpeaking, resetTranscript, isProcessingVoice]);
 
   // Handle incoming WebSocket messages
   useEffect(() => {
@@ -412,8 +379,8 @@ export default function MondayPerplexitySystem() {
       setIsReceiving(true);
       setCharIndex(0);
       
-      // Speak the response using ElevenLabs TTS
-      if (!isSpeaking) {
+      // Speak the response immediately for hands-free operation
+      if (!isSpeaking && message.message) {
         speak(message.message);
       }
     }
@@ -719,6 +686,8 @@ export default function MondayPerplexitySystem() {
             <span className="text-sm text-[#20808D]">
               {wsIsConnected ? 'Connected to Monday Backend' : 'Connecting to Monday Backend...'}
             </span>
+            <div className="w-3 h-3 rounded-full bg-blue-400 ml-4"></div>
+            <span className="text-sm text-blue-400">Voice Ready</span>
           </div>
         </div>
 
@@ -815,16 +784,34 @@ export default function MondayPerplexitySystem() {
           </div>
         </div>
 
-        {/* Real-time Live Transcript Display */}
-        {listening && liveTranscript && conversationMode && (
-          <div className="text-center mb-4 p-4 bg-gradient-to-r from-green-500/10 to-blue-500/10 border border-green-500/30 rounded-xl">
+        {/* Real-time Live Transcript Display - Green UI Restored */}
+        {listening && transcript && !conversationMode && (
+          <div className="text-center mb-4 p-4 bg-gradient-to-r from-green-500/10 to-green-600/10 border border-green-500/30 rounded-xl animate-pulse">
             <div className="flex items-center justify-center gap-2 mb-2">
               <Mic className="w-4 h-4 text-green-400 animate-pulse" />
-              <span className="text-green-400 font-semibold text-sm">Live Speech Recognition:</span>
+              <span className="text-green-400 font-semibold text-sm">🎤 Voice Detected</span>
             </div>
-            <p className="text-[#FBFAF4]/90 text-sm font-mono italic">"{liveTranscript}"</p>
+            <p className="text-green-300/90 text-sm font-mono italic">"{transcript}"</p>
             <div className="text-xs text-green-400/70 mt-1">
-              Processing your command...
+              Listening for "Hey Monday"...
+            </div>
+          </div>
+        )}
+        
+        {/* Conversation Mode Live Transcript - Green UI */}
+        {listening && liveTranscript && conversationMode && (
+          <div className="text-center mb-4 p-4 bg-gradient-to-r from-green-500/20 to-green-600/20 border border-green-500/40 rounded-xl shadow-lg shadow-green-500/20">
+            <div className="flex items-center justify-center gap-2 mb-2">
+              <div className="relative">
+                <Mic className="w-5 h-5 text-green-400 animate-pulse" />
+                <div className="absolute -inset-1 bg-green-400 rounded-full opacity-20 animate-ping"></div>
+              </div>
+              <span className="text-green-400 font-bold text-sm">LIVE RECOGNITION</span>
+            </div>
+            <p className="text-green-300 text-base font-mono font-semibold">"{liveTranscript}"</p>
+            <div className="text-xs text-green-400 mt-2 flex items-center justify-center gap-2">
+              <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
+              <span>Listening for your command...</span>
             </div>
           </div>
         )}

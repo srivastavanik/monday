@@ -10,22 +10,43 @@ if (!process.env.PERPLEXITY_API_KEY) {
 
 const app = express();
 const server = createServer(app);
+
+// More debugging for Socket.IO
+console.log('Initializing Socket.IO server...');
 const io = new Server(server, {
   cors: {
-    origin: ["http://localhost:3000", "http://localhost:3001", "http://localhost:3002"],
+    origin: "*", // Allow all origins for debugging
     methods: ["GET", "POST"],
     credentials: true
-  }
+  },
+  transports: ['websocket', 'polling'] // Explicitly define transports
+});
+
+// Debug middleware for Socket.IO
+io.engine.on('connection_error', (err) => {
+  console.log('Socket.IO engine connection error:', err.req);
+  console.log('Socket.IO engine error message:', err.message);
+  console.log('Socket.IO engine error type:', err.type);
+  console.log('Socket.IO engine error context:', err.context);
 });
 
 const PORT = 3001;
 
 // Middleware
 app.use(cors({
-  origin: ["http://localhost:3000", "http://localhost:3001", "http://localhost:3002"],
+  origin: "*", // Allow all origins for debugging
   credentials: true
 }));
 app.use(express.json());
+
+// Add root endpoint for testing
+app.get('/', (req, res) => {
+  res.json({
+    message: 'Monday backend server is running',
+    socketio: 'enabled',
+    port: PORT
+  });
+});
 
 // Health endpoint
 app.get('/health', (req, res) => {
@@ -33,7 +54,8 @@ app.get('/health', (req, res) => {
     status: 'healthy',
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
-    perplexityApiConfigured: !!process.env.PERPLEXITY_API_KEY
+    perplexityApiConfigured: !!process.env.PERPLEXITY_API_KEY,
+    socketConnections: io.engine.clientsCount || 0
   });
 });
 
@@ -284,7 +306,12 @@ function searchEducationalVideos(query, mode) {
 
 // Socket.IO connection handling
 io.on('connection', (socket) => {
+  console.log('=== NEW CLIENT CONNECTION ===');
   console.log('Client connected:', socket.id);
+  console.log('Client address:', socket.handshake.address);
+  console.log('Transport:', socket.conn.transport.name);
+  console.log('Total clients:', io.engine.clientsCount);
+  console.log('============================');
 
   socket.on('voice_command', async (data) => {
     console.log('Voice command received:', data);

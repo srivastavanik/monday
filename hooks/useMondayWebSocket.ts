@@ -37,6 +37,7 @@ const useMondayWebSocket = ({
   const retryCountRef = useRef(0);
 
   const connect = useCallback(() => {
+    console.log('Socket.IO: Attempting to connect to:', socketUrl);
     if (!socketUrl || retryCountRef.current >= maxRetries) {
       if (retryCountRef.current >= maxRetries) {
         console.warn('Socket.IO: Maximum retry attempts reached.');
@@ -44,20 +45,31 @@ const useMondayWebSocket = ({
       return;
     }
 
+    console.log('Socket.IO: Creating socket connection...');
     const socket = io(socketUrl, {
       transports: ['websocket', 'polling'],
       timeout: 20000,
+      reconnection: true,
+      reconnectionAttempts: 5,
+      reconnectionDelay: 1000,
     });
     
     socketRef.current = socket;
+    console.log('Socket.IO: Socket instance created');
 
     socket.on('connect', () => {
-      console.log('Socket.IO: Connection established');
+      console.log('Socket.IO: ✅ Connection event fired!');
+      console.log('Socket.IO: Socket ID:', socket.id);
+      console.log('Socket.IO: Connected status:', socket.connected);
       setIsConnected(true);
+      console.log('Socket.IO: isConnected state set to TRUE');
       setError(null);
       setReadyState(1); // OPEN
       retryCountRef.current = 0;
-      if (onOpen) onOpen(new Event('open'));
+      if (onOpen) {
+        console.log('Socket.IO: Calling onOpen callback');
+        onOpen(new Event('open'));
+      }
     });
 
     socket.on('disconnect', (reason) => {
@@ -74,8 +86,13 @@ const useMondayWebSocket = ({
       }
     });
 
-    socket.on('connect_error', (err) => {
+    socket.on('connect_error', (err: any) => {
       console.error('Socket.IO: Connection error', err);
+      console.error('Socket.IO: Error type:', err.type);
+      console.error('Socket.IO: Error message:', err.message);
+      console.error('Socket.IO: Socket URL:', socketUrl);
+      console.error('Socket.IO: Error details:', err);
+      
       const errorEvent = new Event('error');
       setError(errorEvent);
       setReadyState(3); // CLOSED
@@ -120,6 +137,21 @@ const useMondayWebSocket = ({
       console.error('Socket.IO: Connection not open. Cannot send message.');
     }
   }, []);
+
+  // Debug connection state every 2 seconds
+  useEffect(() => {
+    const interval = setInterval(() => {
+      console.log('Socket.IO State Check:', {
+        isConnected,
+        socketExists: !!socketRef.current,
+        socketConnected: socketRef.current?.connected,
+        readyState,
+        error: error ? 'Error present' : 'No error'
+      });
+    }, 2000);
+    
+    return () => clearInterval(interval);
+  }, [isConnected, readyState, error]);
 
   return {
     isConnected,
