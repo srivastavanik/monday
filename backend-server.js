@@ -63,6 +63,28 @@ app.get('/health', (req, res) => {
   });
 });
 
+// Test Perplexity API endpoint
+app.get('/test-perplexity', async (req, res) => {
+  console.log('Testing Perplexity API...');
+  try {
+    const testPrompt = 'Say hello and tell me you are Monday, the AI learning assistant.';
+    const response = await queryPerplexityStreaming(testPrompt, 'basic', null);
+    console.log('Test response:', response);
+    res.json({
+      success: true,
+      response: response.content,
+      model: response.model
+    });
+  } catch (error) {
+    console.error('Perplexity API test failed:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      stack: error.stack
+    });
+  }
+});
+
 // Socket.IO test endpoint
 app.get('/socket-test', (req, res) => {
   res.json({
@@ -159,62 +181,64 @@ async function queryPerplexityStreaming(prompt, mode = 'basic', socket = null) {
     'deep-research': 'sonar-deep-research'
   };
 
+  // Enhanced token limits for better performance
+  const tokenLimits = {
+    'basic': 2000,
+    'reasoning': 8000, // Increased for better reasoning
+    'deep-research': 12000 // Increased for comprehensive research
+  };
+
   const model = modelMap[mode] || modelMap['basic'];
+  const maxTokens = tokenLimits[mode] || tokenLimits['basic'];
   
-  console.log(`Querying Perplexity API with model: ${model} for prompt: "${prompt.substring(0, 50)}..."`);
+  console.log(`Querying Perplexity API with model: ${model}, tokens: ${maxTokens} for prompt: "${prompt.substring(0, 50)}..."`);
   
-  // Emit initial progress for reasoning/research modes
-  if (socket && (mode === 'reasoning' || mode === 'deep-research')) {
+  const shouldStream = mode !== 'basic';
+  
+  // For reasoning and deep-research modes, immediately send an initial progress update
+  if (socket && shouldStream) {
     socket.emit(mode === 'reasoning' ? 'reasoning_progress' : 'research_progress', {
       type: mode === 'reasoning' ? 'reasoning_progress' : 'research_progress',
-      update: mode === 'reasoning' ? 'Initializing reasoning engine...' : 'Starting comprehensive research...',
-      data: {
-        sources: [],
-        reasoning: [],
-        citations: []
-      }
+      update: mode === 'reasoning' ? 'Starting analytical reasoning process...' : 'Initiating comprehensive research...',
+      data: { reasoning: [], sources: [], citations: [] }
     });
   }
-  
+
+  const timeoutId = setTimeout(() => {
+    if (abortController) {
+      abortController.abort();
+    }
+  }, 120000); // 2 minute timeout
+
+  const abortController = new AbortController();
+
   try {
     const response = await fetch('https://api.perplexity.ai/chat/completions', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${process.env.PERPLEXITY_API_KEY}`,
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        'Accept': shouldStream ? 'text/event-stream' : 'application/json'
       },
+      signal: abortController.signal,
       body: JSON.stringify({
         model: model,
         messages: [
           {
             role: 'system',
-            content: `You are Monday, an advanced AI learning companion and educational assistant designed for voice interactions. You have a friendly, knowledgeable personality and specialize in making complex topics easy to understand through natural conversation.
-
-PERSONALITY:
-- Enthusiastic about learning and teaching
-- Patient and encouraging  
-- Conversational and natural (like talking to a knowledgeable friend)
-- Uses clear, educational explanations
-- Provides practical examples and analogies
-- Encourages curiosity and deeper exploration
-
-RESPONSE STYLE FOR VOICE INTERACTION:
-- Respond naturally as if speaking directly to the user
-- Keep responses conversational but informative
-- Use "you" and "I" appropriately for natural dialogue
-- Break down complex concepts into digestible parts
-- Use analogies and real-world examples
-- Suggest follow-up questions or related topics to explore
-- Keep responses engaging but not overly long for voice
+            content: `You are Monday, an intelligent learning assistant powered by Perplexity Sonar. You provide helpful, accurate, and engaging responses in a conversational tone.
 
 MODE-SPECIFIC BEHAVIOR:
 ${mode === 'reasoning' ? `- REASONING MODE: Provide thoughtful analysis and logical explanations
 - Walk through your thinking process step by step
+- Begin with a <think> section containing your detailed reasoning
 - Explain the "why" behind concepts and phenomena
 - Use analytical frameworks and reasoning approaches
 - Connect ideas and show relationships between concepts` : ''}
 ${mode === 'deep-research' ? `- DEEP RESEARCH MODE: Provide comprehensive, well-researched information
 - Draw from multiple perspectives and sources
+- Document your research process and key findings
+- Begin with a <research> section outlining your research approach
 - Provide thorough background and context
 - Include relevant details and nuances
 - Offer deeper insights and connections to broader topics` : ''}
@@ -229,6 +253,13 @@ CONVERSATION CONTEXT:
 - Respond as Monday, the helpful learning companion
 - Make your response feel like a natural part of the conversation
 
+OUTPUT FORMAT FOR REASONING & RESEARCH:
+- For reasoning & deep research modes, ALWAYS include your thinking process
+- In reasoning mode, wrap detailed reasoning in <think>...</think> tags
+- In deep research mode, wrap research steps in <research>...</research> tags
+- This thinking/research section will be displayed to the user separately
+- After your thinking/research section, provide your final response
+
 Always respond as Monday in a conversational, voice-appropriate manner. You are having a real-time conversation with the user.`
           },
           {
@@ -236,239 +267,225 @@ Always respond as Monday in a conversational, voice-appropriate manner. You are 
             content: prompt
           }
         ],
-        max_tokens: mode === 'deep-research' ? 4096 : mode === 'reasoning' ? 2048 : 1024,
+        max_tokens: maxTokens,
         temperature: 0.2,
         top_p: 0.9,
-        stream: mode !== 'basic', // Stream for reasoning and research modes
-        return_citations: mode === 'deep-research', // Request citations for deep research
-        return_sources: mode === 'deep-research', // Request sources for deep research
-        search_domain_filter: mode === 'deep-research' ? [] : undefined, // No domain restrictions for deep research
-        search_recency_filter: mode === 'deep-research' ? 'month' : undefined // Recent sources for deep research
+        stream: shouldStream,
+        return_citations: true,
+        return_sources: true
       })
     });
 
+    clearTimeout(timeoutId);
+    console.log('Perplexity API response status:', response.status);
+
     if (!response.ok) {
       const errorText = await response.text();
-      console.error(`Perplexity API error: ${response.status} - ${errorText}`);
       throw new Error(`Perplexity API error: ${response.status} - ${errorText}`);
     }
 
-    // Handle streaming response for reasoning/research modes
-    if (mode !== 'basic' && response.body) {
-      console.log('Processing streaming response...');
-      
-      // Read the full response
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let fullContent = '';
-      let sources = [];
-      let citations = [];
-      let reasoning = [];
-      let lastProgressUpdate = '';
-      let seenSources = new Set();
-      let seenCitations = new Set();
-      let thinkingSteps = [];
-      let currentThought = '';
-      
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        
-        const chunk = decoder.decode(value);
-        const lines = chunk.split('\n');
-        
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const data = line.slice(6);
-            if (data === '[DONE]') continue;
-            
-            try {
-              const parsed = JSON.parse(data);
-              
-              // Extract content
-              if (parsed.choices?.[0]?.delta?.content) {
-                const deltaContent = parsed.choices[0].delta.content;
-                fullContent += deltaContent;
-                currentThought += deltaContent;
-                
-                // For reasoning mode, extract thinking steps from the content
-                if (mode === 'reasoning' && deltaContent.includes('\n')) {
-                  const thoughtLines = currentThought.split('\n').filter(l => l.trim());
-                  for (const thought of thoughtLines) {
-                    if (thought.trim() && !thinkingSteps.includes(thought.trim())) {
-                      thinkingSteps.push(thought.trim());
-                      
-                      // Emit reasoning step
-                      if (socket) {
-                        socket.emit('reasoning_progress', {
-                          type: 'reasoning_progress',
-                          update: thought.trim(),
-                          data: {
-                            reasoning: thinkingSteps.map((t, i) => ({
-                              content: t,
-                              step: i + 1
-                            }))
-                          }
-                        });
-                      }
-                    }
-                  }
-                  currentThought = '';
-                }
-              }
-              
-              // Extract sources from metadata (for deep research)
-              if (parsed.choices?.[0]?.delta?.search_results) {
-                const searchResults = parsed.choices[0].delta.search_results;
-                for (const result of searchResults) {
-                  const sourceKey = result.url || result.title;
-                  if (sourceKey && !seenSources.has(sourceKey)) {
-                    seenSources.add(sourceKey);
-                    const source = {
-                      title: result.title || 'Research Source',
-                      url: result.url || '',
-                      description: result.snippet || result.description || '',
-                      domain: result.domain || new URL(result.url || 'http://example.com').hostname
-                    };
-                    sources.push(source);
-                    
-                    // Emit source update
-                    if (socket && mode === 'deep-research') {
-                      socket.emit('research_progress', {
-                        type: 'research_progress',
-                        update: `Analyzing: ${source.domain}`,
-                        data: {
-                          sources: sources,
-                          citations: citations
-                        }
-                      });
-                    }
-                  }
-                }
-              }
-              
-              // Extract web results (alternative source format)
-              if (parsed.choices?.[0]?.delta?.web_results) {
-                const webResults = parsed.choices[0].delta.web_results;
-                for (const result of webResults) {
-                  const sourceKey = result.url || result.title;
-                  if (sourceKey && !seenSources.has(sourceKey)) {
-                    seenSources.add(sourceKey);
-                    const source = {
-                      title: result.title || 'Web Source',
-                      url: result.url || '',
-                      description: result.snippet || '',
-                      domain: new URL(result.url || 'http://example.com').hostname
-                    };
-                    sources.push(source);
-                    
-                    // Emit source update
-                    if (socket && mode === 'deep-research') {
-                      socket.emit('research_progress', {
-                        type: 'research_progress',
-                        update: `Researching: ${source.domain}`,
-                        data: {
-                          sources: sources,
-                          citations: citations
-                        }
-                      });
-                    }
-                  }
-                }
-              }
-              
-              // Extract citations
-              if (parsed.choices?.[0]?.delta?.citations) {
-                for (const citation of parsed.choices[0].delta.citations) {
-                  const citationKey = citation.url || citation.title;
-                  if (citationKey && !seenCitations.has(citationKey)) {
-                    seenCitations.add(citationKey);
-                    citations.push({
-                      title: citation.title || citation.text || 'Citation',
-                      url: citation.url || '',
-                      author: citation.author || '',
-                      year: citation.year || ''
-                    });
-                  }
-                }
-              }
-              
-            } catch (e) {
-              // Ignore parse errors for incomplete chunks
-              console.log('Parse error (expected for partial chunks):', e.message);
-            }
-          }
-        }
-      }
-      
-      // Process any remaining thought
-      if (currentThought.trim() && mode === 'reasoning' && !thinkingSteps.includes(currentThought.trim())) {
-        thinkingSteps.push(currentThought.trim());
-        if (socket) {
-          socket.emit('reasoning_progress', {
-            type: 'reasoning_progress',
-            update: currentThought.trim(),
-            data: {
-              reasoning: thinkingSteps.map((t, i) => ({
-                content: t,
-                step: i + 1
-              }))
-            }
-          });
-        }
-      }
-      
-      // Filter out thinking tags from the response
-      fullContent = filterThinkingTags(fullContent);
-      
-      // Final progress update
-      if (socket) {
-        const finalUpdate = mode === 'reasoning' 
-          ? 'Reasoning complete. Formulating response...'
-          : `Research complete. Analyzed ${sources.length} sources.`;
-          
-        socket.emit(mode === 'reasoning' ? 'reasoning_progress' : 'research_progress', {
-          type: mode === 'reasoning' ? 'reasoning_progress' : 'research_progress',
-          update: finalUpdate,
-          data: {
-            sources: sources,
-            citations: citations,
-            reasoning: mode === 'reasoning' ? thinkingSteps.map((t, i) => ({
-              content: t,
-              step: i + 1
-            })) : []
-          }
-        });
-      }
-      
-      return {
-        content: fullContent || 'I apologize, but I didn\'t receive a proper response. Could you please try asking your question again?',
-        model: model,
-        usage: { total_tokens: 0 }, // Streaming doesn't provide token usage
-        sources: sources,
-        citations: citations
-      };
-    } else {
-      // Non-streaming response for basic mode
+    if (!shouldStream) {
       const data = await response.json();
-      console.log('Perplexity API response received successfully');
+      let content = data.choices[0]?.message?.content || 'No response content.';
       
-      // Filter out thinking tags from the response
-      let content = data.choices[0]?.message?.content || 'I apologize, but I didn\'t receive a proper response. Could you please try asking your question again?';
+      // Extract thinking process for basic mode (if any)
+      const thinkingProcess = extractThinkingProcess(content);
       content = filterThinkingTags(content);
       
       return {
         content: content,
         model: model,
         usage: data.usage,
-        sources: [],
-        citations: []
+        sources: data.sources || [],
+        citations: data.citations || [],
+        thinking: thinkingProcess
       };
     }
+    
+    // Enhanced SSE Streaming handling
+    if (shouldStream && response.body) {
+      console.log('Processing SSE stream for advanced mode...');
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let sseBuffer = "";
+      let fullContent = "";
+      let thinkingProcess = "";
+      let sources = [];
+      let citations = [];
+      let reasoning = [];
+      let progressCount = 0;
+      let isCollectingThinking = false;
+      let currentThinkingChunk = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          console.log("Stream finished.");
+          break;
+        }
+        
+        sseBuffer += decoder.decode(value, { stream: true });
+
+        let eventEndIndex;
+        while ((eventEndIndex = sseBuffer.indexOf('\n\n')) !== -1) {
+          const eventString = sseBuffer.substring(0, eventEndIndex);
+          sseBuffer = sseBuffer.substring(eventEndIndex + 2);
+          const lines = eventString.split('\n');
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              const jsonData = line.substring(6);
+              if (jsonData.trim() === '[DONE]') {
+                console.log("SSE stream signalled [DONE]");
+                continue;
+              }
+              if (jsonData.trim() === "") continue;
+
+              try {
+                const parsedEvent = JSON.parse(jsonData);
+
+                if (parsedEvent.choices && parsedEvent.choices[0] && parsedEvent.choices[0].delta && parsedEvent.choices[0].delta.content) {
+                  const deltaContent = parsedEvent.choices[0].delta.content;
+                  fullContent += deltaContent;
+                  progressCount++;
+
+                  // Enhanced thinking process tracking
+                  if (deltaContent.includes("<think>") || deltaContent.includes("<research>")) {
+                    isCollectingThinking = true;
+                  }
+                  
+                  if (isCollectingThinking) {
+                    currentThinkingChunk += deltaContent;
+                    
+                    if (deltaContent.includes("</think>") || deltaContent.includes("</research>")) {
+                      isCollectingThinking = false;
+                      thinkingProcess += currentThinkingChunk;
+                      
+                      // Extract thinking content
+                      const thinkMatch = /<think>([\s\S]*?)<\/think>|<research>([\s\S]*?)<\/research>/.exec(currentThinkingChunk);
+                      if (thinkMatch && thinkMatch[1]) {
+                        const thinkStep = thinkMatch[1].trim();
+                        reasoning.push({ content: thinkStep });
+                        
+                        // Send real-time thinking/reasoning to client
+                        if (socket) {
+                          const progressType = mode === 'reasoning' ? 'reasoning_progress' : 'research_progress';
+                          socket.emit(progressType, {
+                            type: progressType,
+                            update: mode === 'reasoning' ? 
+                              `Reasoning step ${reasoning.length}: ${thinkStep.substring(0, 100)}...` :
+                              `Research insight ${reasoning.length}: ${thinkStep.substring(0, 100)}...`,
+                            data: { reasoning, sources, citations }
+                          });
+                        }
+                      }
+                      
+                      currentThinkingChunk = "";
+                    }
+                  }
+
+                  // Send periodic progress updates
+                  if (socket && progressCount % 3 === 0) {
+                     let updateMsg = "Processing response...";
+                     if (mode === 'reasoning') updateMsg = `Analyzing: ${deltaContent.substring(0, 50).replace(/<[^>]*>/g, '')}...`;
+                     if (mode === 'deep-research') updateMsg = `Researching: ${deltaContent.substring(0, 50).replace(/<[^>]*>/g, '')}...`;
+                    
+                    socket.emit(mode === 'reasoning' ? 'reasoning_progress' : 'research_progress', {
+                      type: mode === 'reasoning' ? 'reasoning_progress' : 'research_progress',
+                      update: updateMsg,
+                      data: { reasoning, sources, citations }
+                    });
+                  }
+                }
+
+                // Handle sources and citations
+                if (parsedEvent.choices && parsedEvent.choices[0] && parsedEvent.choices[0].message) {
+                    const message = parsedEvent.choices[0].message;
+                    if (message.sources) {
+                        sources = message.sources.map(s => ({ title: s.title || s.name, url: s.url, description: s.snippet }));
+                         if (socket && mode === 'deep-research') {
+                          socket.emit('research_progress', { 
+                            type: 'research_progress', 
+                            update: `Found ${sources.length} research sources.`, 
+                            data: { sources, reasoning, citations } 
+                          });
+                        }
+                    }
+                    if (message.citations) {
+                        citations = message.citations.map(c => ({ title: c.title || c.text, url: c.url }));
+                         if (socket && mode === 'deep-research') {
+                          socket.emit('research_progress', { 
+                            type: 'research_progress', 
+                            update: `Found ${citations.length} citations.`, 
+                            data: { sources, reasoning, citations } 
+                          });
+                         }
+                    }
+                }
+
+              } catch (e) {
+                console.error('Error parsing JSON from SSE data:', e);
+                console.error('Problematic JSON data string:', jsonData);
+              }
+            }
+          }
+        }
+      }
+      
+      // Extract any remaining thinking process
+      if (thinkingProcess === "") {
+        thinkingProcess = extractThinkingProcess(fullContent);
+      }
+      
+      // Filter out thinking tags from the final content
+      fullContent = filterThinkingTags(fullContent);
+      
+      if (socket) {
+        const finalUpdate = mode === 'reasoning' ? 'Analysis complete.' : 'Research complete.';
+        socket.emit(mode === 'reasoning' ? 'reasoning_progress' : 'research_progress', {
+          type: mode === 'reasoning' ? 'reasoning_progress' : 'research_progress',
+          update: finalUpdate,
+          data: { sources, citations, reasoning }
+        });
+      }
+      
+      return {
+        content: fullContent || 'No streaming content received.',
+        model: model,
+        usage: { total_tokens: 0 },
+        sources: sources,
+        citations: citations,
+        thinking: thinkingProcess,
+        reasoning: reasoning
+      };
+    } else {
+      throw new Error("Response body not available for streaming or not a streaming request.");
+    }
   } catch (error) {
-    console.error('Perplexity API error:', error);
-    throw error; // Re-throw to handle in the calling function
+    console.error('Error in queryPerplexityStreaming:', error);
+    if (error.name === 'AbortError') {
+        throw new Error('Perplexity API request timed out.');
+    }
+    throw error;
   }
+}
+
+// Extract thinking process from content
+function extractThinkingProcess(content) {
+  if (!content) return "";
+  
+  // Extract <think>...</think> blocks
+  const thinkMatch = /<think>([\s\S]*?)<\/think>/i.exec(content);
+  if (thinkMatch && thinkMatch[1]) {
+    return thinkMatch[1].trim();
+  }
+  
+  // Extract <research>...</research> blocks
+  const researchMatch = /<research>([\s\S]*?)<\/research>/i.exec(content);
+  if (researchMatch && researchMatch[1]) {
+    return researchMatch[1].trim();
+  }
+  
+  return "";
 }
 
 // Function to filter out thinking tags and internal reasoning
@@ -478,66 +495,19 @@ function filterThinkingTags(content) {
   // Remove <think>...</think> blocks completely
   content = content.replace(/<think>[\s\S]*?<\/think>/gi, '');
   
+  // Remove <research>...</research> blocks
+  content = content.replace(/<research>[\s\S]*?<\/research>/gi, '');
+  
   // Remove any remaining thinking artifacts
   content = content.replace(/^\s*thinking:[\s\S]*?(?=\n\n|\n[A-Z]|$)/im, '');
   content = content.replace(/^\s*analysis:[\s\S]*?(?=\n\n|\n[A-Z]|$)/im, '');
+  content = content.replace(/^\s*research:[\s\S]*?(?=\n\n|\n[A-Z]|$)/im, '');
   
   // Clean up extra whitespace
   content = content.replace(/\n\s*\n\s*\n/g, '\n\n');
   content = content.trim();
   
   return content;
-}
-
-// YouTube search function
-function searchEducationalVideos(query, mode) {
-  // Educational video suggestions based on query
-  const videoSuggestions = [
-    { id: "8hly31xKli0", title: "Binary Search Algorithm - Explained Simply", channel: "CS Dojo" },
-    { id: "D6xkbGLQesk", title: "Binary Search Tree Implementation", channel: "GeeksforGeeks" },
-    { id: "5xlIPT1FRcA", title: "Data Structures: Binary Search Trees", channel: "MIT OpenCourseWare" },
-    { id: "pYT9F8_LFTM", title: "Algorithms: Binary Search", channel: "Khan Academy Computer Science" },
-    { id: "P3YID7liBug", title: "Binary Search Tree Visualization", channel: "Coursera" },
-    { id: "kPRA0W1kECg", title: "Introduction to Machine Learning", channel: "MIT OpenCourseWare" },
-    { id: "aircAruvnKk", title: "Neural Networks Explained", channel: "3Blue1Brown" },
-    { id: "WUvTyaaNkzM", title: "Calculus Fundamentals", channel: "Khan Academy" },
-    { id: "fNk_zzaMoSs", title: "Linear Algebra Essence", channel: "3Blue1Brown" },
-    { id: "YAXLy4jNhzI", title: "Physics Concepts Visualized", channel: "MinutePhysics" }
-  ];
-
-  // More intelligent video matching
-  const queryLower = query.toLowerCase();
-  const queryWords = queryLower.split(/\s+/);
-  
-  // Find videos that match query keywords
-  let relevantVideos = videoSuggestions.filter(video => {
-    const videoTitle = video.title.toLowerCase();
-    return queryWords.some(word => 
-      word.length > 2 && videoTitle.includes(word)
-    );
-  });
-
-  // If no direct matches, find videos with related topics
-  if (relevantVideos.length === 0) {
-    const topicKeywords = {
-      'binary': ['binary', 'search', 'tree', 'algorithm'],
-      'machine': ['machine', 'learning', 'neural', 'ai'],
-      'math': ['calculus', 'algebra', 'math'],
-      'physics': ['physics', 'science'],
-      'programming': ['algorithm', 'code', 'programming']
-    };
-
-    for (const [topic, keywords] of Object.entries(topicKeywords)) {
-      if (queryWords.some(word => keywords.includes(word))) {
-        relevantVideos = videoSuggestions.filter(video =>
-          keywords.some(keyword => video.title.toLowerCase().includes(keyword))
-        );
-        break;
-      }
-    }
-  }
-
-  return relevantVideos.length > 0 ? relevantVideos[0] : videoSuggestions[0];
 }
 
 // Socket.IO connection handling
@@ -557,8 +527,13 @@ io.on('connection', (socket) => {
     try {
       // If this is just the activation (Hey Monday without additional content), respond briefly
       if (isActivation && (!command || command.trim().length === 0)) {
+        const greetingMessage = "Hi! I'm Monday, your learning assistant powered by Perplexity Sonar. What would you like to dive into today?";
+        
+        console.log("Sending activation greeting:", greetingMessage);
+        
         socket.emit('voice_response', {
-          message: "Hi! I'm Monday, your learning assistant powered by Perplexity Sonar. What would you like to dive into today?",
+          type: 'voice_response',
+          message: greetingMessage,
           data: {
             panels: [],
             mode: 'basic',
@@ -566,10 +541,12 @@ io.on('connection', (socket) => {
             query: 'activation',
             citations: [],
             reasoning: [],
+            sources: [],
             metadata: {
               tokensUsed: 0,
               responseTime: Date.now(),
-              isActivation: true
+              isActivation: true,
+              youtubeVideoId: undefined
             }
           }
         });
@@ -582,49 +559,127 @@ io.on('connection', (socket) => {
       
       console.log(`Processing command in ${mode} mode (confidence: ${modeDetection.confidence}): "${command}"`);
       
-      // Query Perplexity API with streaming support for reasoning/research modes
-      const perplexityResponse = await queryPerplexityStreaming(command, mode, socket);
-      
-      // Get relevant YouTube video
-      const youtubeVideo = searchEducationalVideos(command, mode);
-      
-      console.log(`Generated response: "${perplexityResponse.content.substring(0, 100)}..."`);
-      
-      // Create spatial panels
-      const panels = [{
-        id: `panel_${Date.now()}_main`,
-        type: 'content',
-        position: [0, 1.5, -2],
-        rotation: [0, 0, 0],
-        title: `Monday: ${command.substring(0, 50)}`,
-        content: perplexityResponse.content,
-        fullContent: perplexityResponse.content,
-        isActive: true,
-        opacity: 1,
-        createdAt: Date.now(),
-        model: perplexityResponse.model,
-        citations: []
-      }];
-      
-      // Send response
-      socket.emit('voice_response', {
-        message: perplexityResponse.content,
-        data: {
-          panels: panels,
-          mode: mode,
-          model: perplexityResponse.model,
-          query: command,
-          citations: perplexityResponse.citations || [],
-          reasoning: [],
-          sources: perplexityResponse.sources || [],
-          metadata: {
-            youtubeVideoId: youtubeVideo.id,
-            youtubeTitle: youtubeVideo.title,
-            tokensUsed: perplexityResponse.usage?.total_tokens || 0,
-            responseTime: Date.now()
-          }
+      // For basic mode, send response immediately without any progress
+      if (mode === 'basic') {
+        try {
+          console.log('Starting basic mode processing...');
+          const perplexityResponse = await queryPerplexityStreaming(command, mode, null); // No socket for basic mode
+          
+          console.log(`Basic mode response ready: "${perplexityResponse.content.substring(0, 100)}..."`);
+          console.log('Full response object:', {
+            hasContent: !!perplexityResponse.content,
+            contentLength: perplexityResponse.content?.length,
+            model: perplexityResponse.model,
+            usage: perplexityResponse.usage
+          });
+
+          // Create visualization data
+          const visualizationData = {
+            query: command,
+            mode: mode,
+            model: perplexityResponse.model,
+            content: perplexityResponse.content,
+            citations: perplexityResponse.citations || []
+          };
+          
+          // Create spatial panels
+          const panels = [{
+            id: `panel_${Date.now()}_main`,
+            type: 'content',
+            position: [0, 1.5, -2],
+            rotation: [0, 0, 0],
+            title: `Monday: ${command.substring(0, 50)}`,
+            content: perplexityResponse.content,
+            fullContent: perplexityResponse.content,
+            isActive: true,
+            opacity: 1,
+            createdAt: Date.now(),
+            model: perplexityResponse.model,
+            citations: []
+          }];
+          
+          // Send response immediately for basic mode
+          const responsePayload = {
+            type: 'voice_response',
+            message: perplexityResponse.content,
+            data: {
+              panels: panels,
+              mode: mode,
+              model: perplexityResponse.model,
+              query: command,
+              citations: [],
+              reasoning: [],
+              sources: [],
+              visualizationData: visualizationData,
+              metadata: {
+                tokensUsed: perplexityResponse.usage?.total_tokens || 0,
+                responseTime: Date.now()
+              }
+            }
+          };
+          
+          console.log('Sending voice_response to client...');
+          console.log('Response payload:', JSON.stringify(responsePayload).substring(0, 200) + '...');
+          
+          socket.emit('voice_response', responsePayload);
+          
+          console.log('Voice response sent successfully');
+        } catch (error) {
+          console.error('Error in basic mode:', error);
+          console.error('Error stack:', error.stack);
+          socket.emit('voice_error', {
+            type: 'voice_error',
+            error: `I encountered an issue: ${error.message}. Please try again.`
+          });
         }
-      });
+      } else {
+        // For reasoning/research modes, use streaming with progress
+        try {
+          const perplexityResponse = await queryPerplexityStreaming(command, mode, socket);
+          
+          console.log(`${mode} mode response ready: "${perplexityResponse.content.substring(0, 100)}..."`);
+          
+          // Create spatial panels
+          const panels = [{
+            id: `panel_${Date.now()}_main`,
+            type: 'content',
+            position: [0, 1.5, -2],
+            rotation: [0, 0, 0],
+            title: `Monday: ${command.substring(0, 50)}`,
+            content: perplexityResponse.content,
+            fullContent: perplexityResponse.content,
+            isActive: true,
+            opacity: 1,
+            createdAt: Date.now(),
+            model: perplexityResponse.model,
+            citations: perplexityResponse.citations || []
+          }];
+          
+          // Send final response
+          socket.emit('voice_response', {
+            message: perplexityResponse.content,
+            data: {
+              panels: panels,
+              mode: mode,
+              model: perplexityResponse.model,
+              query: command,
+              citations: perplexityResponse.citations || [],
+              reasoning: perplexityResponse.reasoning || [],
+              sources: perplexityResponse.sources || [],
+              thinking: perplexityResponse.thinking || '',
+              metadata: {
+                tokensUsed: perplexityResponse.usage?.total_tokens || 0,
+                responseTime: Date.now()
+              }
+            }
+          });
+        } catch (error) {
+          console.error(`Error in ${mode} mode:`, error);
+          socket.emit('voice_error', {
+            error: `I encountered an issue: ${error.message}. Please try again.`
+          });
+        }
+      }
       
     } catch (error) {
       console.error('Error processing voice command:', error);
