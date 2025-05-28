@@ -71,6 +71,7 @@ export default function MondayPerplexitySystem() {
   const [charIndex, setCharIndex] = useState(0)
   const [youtubeVideoId, setYoutubeVideoId] = useState<string | undefined>(undefined)
   const [visualizationData, setVisualizationData] = useState<any>(null)
+  const [youtubeVideoData, setYoutubeVideoData] = useState<any>(null)
   const [userTranscript, setUserTranscript] = useState("")
   const [apiError, setApiError] = useState<string | null>(null)
   const [isMounted, setIsMounted] = useState(false)
@@ -91,6 +92,33 @@ export default function MondayPerplexitySystem() {
     voiceId: "21m00Tcm4TlvDq8ikWAM", // Rachel voice
     apiKey: "sk_9454bca5ee475d45dc6e50bcb33bc3fb76f138e2191ff47d"
   });
+
+  // Helper function to extract first two sentences for speech
+  const getFirstTwoSentences = useCallback((text: string): string => {
+    if (!text || text.trim().length === 0) return text;
+    
+    // Split by sentence endings, but be careful about abbreviations and numbers
+    const sentences = text
+      .replace(/([.!?])\s+/g, '$1|SPLIT|') // Mark sentence boundaries
+      .split('|SPLIT|')
+      .filter(sentence => sentence.trim().length > 0)
+      .map(sentence => sentence.trim());
+    
+    if (sentences.length === 0) return text;
+    if (sentences.length === 1) return sentences[0];
+    
+    // Take first two sentences
+    const firstTwo = sentences.slice(0, 2).join('. ');
+    
+    // Add period if the second sentence doesn't end with punctuation
+    const lastChar = firstTwo.slice(-1);
+    const punctuationMarks = ['.', '!', '?'];
+    const needsPeriod = !punctuationMarks.includes(lastChar);
+    const result = needsPeriod ? firstTwo + '.' : firstTwo;
+    
+    // Add note about the rest being on screen
+    return result + ' The rest of the details are shown on your screen.';
+  }, []);
 
   // --- WebSocket Hook --- 
   const handleWebSocketOpen = useCallback(() => {
@@ -371,7 +399,7 @@ export default function MondayPerplexitySystem() {
       // This allows the first few characters to appear before speech starts
       setTimeout(() => {
         if (!isSpeaking && message.message) {
-          speak(message.message);
+          speak(getFirstTwoSentences(message.message));
         }
       }, 100); // Small delay for better sync
     }
@@ -403,6 +431,15 @@ export default function MondayPerplexitySystem() {
       // Extract YouTube video ID if present
       if (message.data.metadata?.youtubeVideoId) {
         setYoutubeVideoId(message.data.metadata.youtubeVideoId);
+        // Set YouTube video data for the panel
+        setYoutubeVideoData({
+          title: message.data.metadata.youtubeTitle,
+          channel: message.data.metadata.youtubeChannel,
+          description: message.data.metadata.youtubeDescription,
+          thumbnail: message.data.metadata.youtubeThumbnail,
+          publishedAt: message.data.metadata.youtubePublishedAt,
+          relatedVideos: message.data.metadata.youtubeRelatedVideos || []
+        });
       }
 
       // Check if this was just an activation response
@@ -843,15 +880,15 @@ export default function MondayPerplexitySystem() {
           </div>
         )}
 
-        <div className="grid grid-cols-1 xl:grid-cols-12 gap-8 h-[800px]">
+        <div className="grid grid-cols-1 xl:grid-cols-12 gap-8">
           <div className="xl:col-span-4 transform xl:-rotate-2 xl:scale-95 origin-right">
-            <div className="h-full shadow-2xl shadow-[#20808D]/20">
+            <div className="h-[800px] shadow-2xl shadow-[#20808D]/20">
               <BinaryTree3D visualizationData={visualizationData} title="Query Visualization" /> 
             </div>
           </div>
 
           <div className="xl:col-span-4 z-10">
-            <div className="h-full shadow-2xl shadow-[#20808D]/30">
+            <div className="h-[800px] shadow-2xl shadow-[#20808D]/30">
               <VoiceProcessingPanel
                 currentResponse={currentResponse}
                 isThinking={isThinking}
@@ -869,11 +906,12 @@ export default function MondayPerplexitySystem() {
           </div>
 
           <div className="xl:col-span-4 transform xl:rotate-2 xl:scale-95 origin-left">
-            <div className="h-full shadow-2xl shadow-[#20808D]/20">
+            <div className="h-[800px] shadow-2xl shadow-[#20808D]/20">
               <YouTubePanel 
                 videoId={youtubeVideoId} 
                 query={visualizationData?.query || userTranscript}
                 mode={currentMode}
+                videoData={youtubeVideoData}
               />
             </div>
           </div>

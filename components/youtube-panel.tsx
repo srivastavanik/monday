@@ -1,12 +1,27 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { Play, Pause, Volume2, Maximize, ExternalLink, ThumbsUp, Share, Search, RefreshCw } from "lucide-react"
+import { Play, Pause, Volume2, Maximize, ExternalLink, ThumbsUp, Share, Search } from "lucide-react"
 
 interface YouTubePanelProps {
   videoId?: string;
   query?: string;
   mode?: "basic" | "reasoning" | "deep-research";
+  videoData?: {
+    title?: string;
+    channel?: string;
+    description?: string;
+    thumbnail?: string;
+    publishedAt?: string;
+    relatedVideos?: Array<{
+      id: string;
+      title: string;
+      channel: string;
+      description: string;
+      thumbnail: string;
+      publishedAt: string;
+    }>;
+  };
 }
 
 interface VideoData {
@@ -20,104 +35,81 @@ interface VideoData {
   viewCount: string;
 }
 
-export function YouTubePanel({ videoId, query, mode }: YouTubePanelProps) {
+export function YouTubePanel({ videoId, query, mode, videoData: backendVideoData }: YouTubePanelProps) {
   const [isPlaying, setIsPlaying] = useState(false)
   const [currentTime, setCurrentTime] = useState("0:00")
   const [duration, setDuration] = useState("0:00")
   const [videoData, setVideoData] = useState<VideoData | null>(null)
-  const [isSearching, setIsSearching] = useState(false)
-  const [searchError, setSearchError] = useState<string | null>(null)
   const [relatedVideos, setRelatedVideos] = useState<VideoData[]>([])
 
-  // Default educational video for demo
+  // Default educational video for when no data is available
   const defaultVideoData: VideoData = {
-    id: "pYT9F8_LFTM",
-    title: "Binary Search Algorithm - Complete Visual Tutorial",
-    description: "Master binary search with step-by-step visualization and real-world examples. Learn the O(log n) algorithm that efficiently searches sorted arrays and forms the foundation of many advanced data structures.",
-    channelName: "CS Dojo",
-    thumbnail: `https://img.youtube.com/vi/pYT9F8_LFTM/maxresdefault.jpg`,
-    duration: "12:18",
-    publishedAt: "2 years ago",
-    viewCount: "1.2M views"
+    id: "aircAruvnKk",
+    title: "But what is a Neural Network? | Deep learning, chapter 1",
+    description: "Subscribe for new videos every Friday! Neural networks can seem like a black box. But what exactly are they? And how do they work?",
+    channelName: "3Blue1Brown",
+    thumbnail: `https://img.youtube.com/vi/aircAruvnKk/maxresdefault.jpg`,
+    duration: "19:13",
+    publishedAt: "Oct 5, 2017",
+    viewCount: "15M views"
   }
 
-  // Search for educational videos based on query
-  const searchEducationalVideos = async (searchQuery: string) => {
-    if (!searchQuery) return;
-    
-    setIsSearching(true);
-    setSearchError(null);
-    
-    try {
-      // For demo purposes, we'll simulate video search with educational content
-      // In production, you would use YouTube Data API v3
-      const educationalQueries = [
-        `${searchQuery} tutorial`,
-        `${searchQuery} explained`,
-        `${searchQuery} course`,
-        `${searchQuery} lecture`,
-        `learn ${searchQuery}`,
-        `${searchQuery} fundamentals`
-      ];
-      
-      // Simulate API delay
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      
-      // Generate mock educational video data based on query
-      const mockVideos: VideoData[] = educationalQueries.map((q, index) => ({
-        id: `mock_${Date.now()}_${index}`,
-        title: `${searchQuery.charAt(0).toUpperCase() + searchQuery.slice(1)} - ${
-          ['Complete Tutorial', 'Explained Simply', 'Full Course', 'Comprehensive Guide', 'Step by Step', 'Fundamentals'][index]
-        }`,
-        description: `Learn ${searchQuery} with this comprehensive educational video. Perfect for ${
-          mode === 'reasoning' ? 'deep analytical thinking' : 
-          mode === 'deep-research' ? 'thorough research and understanding' : 
-          'foundational learning'
-        }.`,
-        channelName: ['Khan Academy', 'MIT OpenCourseWare', 'Coursera', 'edX', 'FreeCodeCamp', 'Crash Course'][index],
-        thumbnail: `https://img.youtube.com/vi/dQw4w9WgXcQ/maxresdefault.jpg`,
-        duration: ['15:42', '23:18', '45:30', '12:05', '38:22', '19:47'][index],
-        publishedAt: ['1 year ago', '6 months ago', '2 years ago', '3 months ago', '1 month ago', '8 months ago'][index],
-        viewCount: ['2.1M', '856K', '3.4M', '1.7M', '945K', '1.3M'][index] + ' views'
-      }));
-      
-      setRelatedVideos(mockVideos);
-      
-      // Set the first video as the main video
-      if (mockVideos.length > 0) {
-        setVideoData(mockVideos[0]);
-      }
-      
-    } catch (error) {
-      console.error('Error searching for videos:', error);
-      setSearchError('Failed to search for educational videos');
-      setVideoData(defaultVideoData);
-    } finally {
-      setIsSearching(false);
-    }
-  };
-
-  // Effect to search for videos when query changes
+  // Effect to handle video data from backend
   useEffect(() => {
-    if (query && query.trim()) {
-      searchEducationalVideos(query.trim());
-    } else if (videoId) {
-      // If a specific video ID is provided, use it
+    if (videoId && backendVideoData) {
+      // Use real video data from backend YouTube API
+      console.log("Using real video data from YouTube API:", videoId);
       setVideoData({
         id: videoId,
-        title: "Educational Content",
-        description: "Relevant educational video content.",
-        channelName: "Educational Channel",
-        thumbnail: `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`,
-        duration: "Unknown",
-        publishedAt: "Recently",
+        title: backendVideoData.title || `Educational Content: ${query || 'Video'}`,
+        description: backendVideoData.description || `Relevant educational video content about ${query || 'this topic'}.`,
+        channelName: backendVideoData.channel || "Educational Channel",
+        thumbnail: backendVideoData.thumbnail || `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`,
+        duration: "Educational content",
+        publishedAt: backendVideoData.publishedAt || "Recently selected",
         viewCount: "Educational content"
       });
+      
+      // Set related videos from backend (limit to 2)
+      if (backendVideoData.relatedVideos && backendVideoData.relatedVideos.length > 0) {
+        const formattedRelatedVideos = backendVideoData.relatedVideos.slice(0, 2).map(video => ({
+          id: video.id,
+          title: video.title,
+          description: video.description,
+          channelName: video.channel,
+          thumbnail: video.thumbnail,
+          duration: "Educational content",
+          publishedAt: video.publishedAt,
+          viewCount: "Educational content"
+        }));
+        setRelatedVideos(formattedRelatedVideos);
+      } else {
+        setRelatedVideos([]);
+      }
+      
+    } else if (videoId) {
+      // Basic video data when we only have an ID
+      console.log("Using basic video data for ID:", videoId);
+      setVideoData({
+        id: videoId,
+        title: query ? `Educational Content: ${query}` : "Educational Content",
+        description: query ? 
+          `Relevant educational video content about ${query}. This video was automatically selected based on your query.` :
+          "Relevant educational video content.",
+        channelName: "Educational Channel",
+        thumbnail: `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`,
+        duration: "Educational content",
+        publishedAt: "Recently selected",
+        viewCount: "Educational content"
+      });
+      setRelatedVideos([]);
     } else {
-      // Use default video
+      // Use default video when no data available
+      console.log("Using default educational video");
       setVideoData(defaultVideoData);
+      setRelatedVideos([]);
     }
-  }, [query, videoId]);
+  }, [videoId, query, backendVideoData]);
 
   const currentVideoId = videoData?.id || defaultVideoData.id;
   const embedUrl = `https://www.youtube.com/embed/${currentVideoId}?autoplay=0&controls=1&modestbranding=1&rel=0&cc_load_policy=1`;
@@ -127,12 +119,6 @@ export function YouTubePanel({ videoId, query, mode }: YouTubePanelProps) {
     setCurrentTime("0:00");
   };
 
-  const handleRefreshSearch = () => {
-    if (query) {
-      searchEducationalVideos(query);
-    }
-  };
-
   return (
     <div className="h-full flex flex-col bg-gradient-to-br from-[#091717] via-[#0A1A1A] to-[#091717] border border-[#20808D]/30 rounded-3xl overflow-hidden shadow-2xl backdrop-blur-xl">
       {/* Header */}
@@ -140,11 +126,7 @@ export function YouTubePanel({ videoId, query, mode }: YouTubePanelProps) {
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-4">
             <div className="w-8 h-8 bg-gradient-to-br from-red-600 to-red-500 rounded-lg flex items-center justify-center shadow-lg">
-              {isSearching ? (
-                <RefreshCw className="w-4 h-4 text-white animate-spin" />
-              ) : (
-                <Play className="w-4 h-4 text-white fill-white" />
-              )}
+              <Play className="w-4 h-4 text-white fill-white" />
             </div>
             <div>
               <span className="text-[#FBFAF4] font-bold text-lg">
@@ -156,16 +138,6 @@ export function YouTubePanel({ videoId, query, mode }: YouTubePanelProps) {
             </div>
           </div>
           <div className="flex items-center gap-2">
-            {query && (
-              <button
-                onClick={handleRefreshSearch}
-                disabled={isSearching}
-                className="p-2 rounded-lg bg-[#20808D]/20 hover:bg-[#20808D]/30 transition-colors"
-                title="Refresh search"
-              >
-                <RefreshCw className={`w-4 h-4 text-[#20808D] ${isSearching ? 'animate-spin' : ''}`} />
-              </button>
-            )}
             {videoData && (
               <a 
                 href={`https://www.youtube.com/watch?v=${currentVideoId}`} 
@@ -183,27 +155,7 @@ export function YouTubePanel({ videoId, query, mode }: YouTubePanelProps) {
 
       {/* Video Area */}
       <div className="flex-1 relative bg-black rounded-t-2xl overflow-hidden">
-        {isSearching ? (
-          <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-gray-900 to-black">
-            <div className="text-center">
-              <RefreshCw className="w-8 h-8 text-[#20808D] animate-spin mx-auto mb-4" />
-              <p className="text-[#20808D] text-sm">Searching for educational videos...</p>
-            </div>
-          </div>
-        ) : searchError ? (
-          <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-red-900/20 to-black">
-            <div className="text-center">
-              <Search className="w-8 h-8 text-red-400 mx-auto mb-4" />
-              <p className="text-red-400 text-sm">{searchError}</p>
-              <button
-                onClick={handleRefreshSearch}
-                className="mt-2 px-4 py-2 bg-red-500/20 hover:bg-red-500/30 rounded-lg text-red-400 text-xs transition-colors"
-              >
-                Try Again
-              </button>
-            </div>
-          </div>
-        ) : videoData ? (
+        {videoData ? (
           <iframe
             className="w-full h-full"
             src={embedUrl}
@@ -221,7 +173,7 @@ export function YouTubePanel({ videoId, query, mode }: YouTubePanelProps) {
           </div>
         )}
 
-        {videoData && !isSearching && (
+        {videoData && (
           <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/90 via-black/50 to-transparent p-6">
             <div className="space-y-4">
               {/* Progress bar */}
@@ -283,18 +235,18 @@ export function YouTubePanel({ videoId, query, mode }: YouTubePanelProps) {
         )}
         
         {/* Related Videos */}
-        {relatedVideos.length > 1 && (
+        {relatedVideos.length > 0 && (
           <div className="mt-4 pt-4 border-t border-[#20808D]/20">
             <h4 className="text-[#FBFAF4] font-semibold text-sm mb-3">Related Educational Content</h4>
             <div className="space-y-2 max-h-32 overflow-y-auto">
-              {relatedVideos.slice(1, 4).map((video, index) => (
+              {relatedVideos.map((video, index) => (
                 <button
                   key={video.id}
                   onClick={() => handleVideoSelect(video)}
                   className="w-full text-left p-2 rounded-lg bg-[#20808D]/10 hover:bg-[#20808D]/20 transition-colors"
                 >
                   <div className="text-[#FBFAF4] text-xs font-medium truncate">{video.title}</div>
-                  <div className="text-[#20808D] text-xs">{video.channelName} • {video.duration}</div>
+                  <div className="text-[#20808D] text-xs">{video.channelName} • {video.publishedAt}</div>
                 </button>
               ))}
             </div>

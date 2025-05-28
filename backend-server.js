@@ -8,6 +8,11 @@ if (!process.env.PERPLEXITY_API_KEY) {
   process.env.PERPLEXITY_API_KEY = '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';
 }
 
+// YouTube API key
+if (!process.env.YOUTUBE_API_KEY) {
+  process.env.YOUTUBE_API_KEY = 'AIzaSyDn_zCV8AGjkQFufH7RDGkSiXD75-2Q39M';
+}
+
 const app = express();
 const server = createServer(app);
 
@@ -272,55 +277,147 @@ function filterThinkingTags(content) {
   return content;
 }
 
-// YouTube search function
-function searchEducationalVideos(query, mode) {
-  // Educational video suggestions based on query
-  const videoSuggestions = [
-    { id: "8hly31xKli0", title: "Binary Search Algorithm - Explained Simply", channel: "CS Dojo" },
-    { id: "D6xkbGLQesk", title: "Binary Search Tree Implementation", channel: "GeeksforGeeks" },
-    { id: "5xlIPT1FRcA", title: "Data Structures: Binary Search Trees", channel: "MIT OpenCourseWare" },
-    { id: "pYT9F8_LFTM", title: "Algorithms: Binary Search", channel: "Khan Academy Computer Science" },
-    { id: "P3YID7liBug", title: "Binary Search Tree Visualization", channel: "Coursera" },
-    { id: "kPRA0W1kECg", title: "Introduction to Machine Learning", channel: "MIT OpenCourseWare" },
-    { id: "aircAruvnKk", title: "Neural Networks Explained", channel: "3Blue1Brown" },
-    { id: "WUvTyaaNkzM", title: "Calculus Fundamentals", channel: "Khan Academy" },
-    { id: "fNk_zzaMoSs", title: "Linear Algebra Essence", channel: "3Blue1Brown" },
-    { id: "YAXLy4jNhzI", title: "Physics Concepts Visualized", channel: "MinutePhysics" }
-  ];
-
-  // More intelligent video matching
-  const queryLower = query.toLowerCase();
-  const queryWords = queryLower.split(/\s+/);
+// Real YouTube Data API search function
+async function searchEducationalVideos(query, mode) {
+  console.log(`Searching YouTube API for educational videos with query: "${query}" in ${mode} mode`);
   
-  // Find videos that match query keywords
-  let relevantVideos = videoSuggestions.filter(video => {
-    const videoTitle = video.title.toLowerCase();
-    return queryWords.some(word => 
-      word.length > 2 && videoTitle.includes(word)
-    );
-  });
+  if (!process.env.YOUTUBE_API_KEY) {
+    console.error('YouTube API key not configured');
+    return null;
+  }
+  
+  try {
+    // Create educational search terms based on the query and mode
+    const educationalTerms = ['tutorial', 'explained', 'lesson', 'course', 'learn', 'education'];
+    const searchQuery = `${query} ${educationalTerms[Math.floor(Math.random() * educationalTerms.length)]}`;
+    
+    // Call YouTube Data API v3
+    const apiUrl = `https://www.googleapis.com/youtube/v3/search`;
+    const params = new URLSearchParams({
+      part: 'snippet',
+      q: searchQuery,
+      key: process.env.YOUTUBE_API_KEY,
+      type: 'video',
+      order: 'relevance',
+      maxResults: '3', // Get 3 videos (1 main + 2 related)
+      safeSearch: 'moderate',
+      videoEmbeddable: 'true',
+      videoDuration: 'medium', // 4-20 minutes are good for educational content
+      relevanceLanguage: 'en',
+      regionCode: 'US'
+    });
 
-  // If no direct matches, find videos with related topics
-  if (relevantVideos.length === 0) {
-    const topicKeywords = {
-      'binary': ['binary', 'search', 'tree', 'algorithm'],
-      'machine': ['machine', 'learning', 'neural', 'ai'],
-      'math': ['calculus', 'algebra', 'math'],
-      'physics': ['physics', 'science'],
-      'programming': ['algorithm', 'code', 'programming']
+    const response = await fetch(`${apiUrl}?${params.toString()}`);
+    
+    if (!response.ok) {
+      console.error(`YouTube API error: ${response.status} - ${response.statusText}`);
+      throw new Error(`YouTube API request failed: ${response.status}`);
+    }
+
+    const data = await response.json();
+    
+    if (!data.items || data.items.length === 0) {
+      console.log('No videos found, falling back to default');
+      return getFallbackVideo();
+    }
+
+    // Get the first video as the main result
+    const mainVideo = data.items[0];
+    
+    console.log(`Found YouTube video: "${mainVideo.snippet.title}" by ${mainVideo.snippet.channelTitle}`);
+    
+    return {
+      id: mainVideo.id.videoId,
+      title: mainVideo.snippet.title,
+      channel: mainVideo.snippet.channelTitle,
+      description: mainVideo.snippet.description,
+      thumbnail: mainVideo.snippet.thumbnails.medium?.url || mainVideo.snippet.thumbnails.default?.url,
+      publishedAt: new Date(mainVideo.snippet.publishedAt).toLocaleDateString(),
+      // Also return related videos for the frontend
+      relatedVideos: data.items.slice(1).map(video => ({
+        id: video.id.videoId,
+        title: video.snippet.title,
+        channel: video.snippet.channelTitle,
+        description: video.snippet.description,
+        thumbnail: video.snippet.thumbnails.medium?.url || video.snippet.thumbnails.default?.url,
+        publishedAt: new Date(video.snippet.publishedAt).toLocaleDateString()
+      }))
     };
 
-    for (const [topic, keywords] of Object.entries(topicKeywords)) {
-      if (queryWords.some(word => keywords.includes(word))) {
-        relevantVideos = videoSuggestions.filter(video =>
-          keywords.some(keyword => video.title.toLowerCase().includes(keyword))
-        );
-        break;
-      }
-    }
-  }
+  } catch (error) {
+    console.error('YouTube API search failed:', error);
+    
+    // Try a simpler search without educational terms
+    try {
+      console.log('Retrying with simpler search...');
+      const simpleApiUrl = `https://www.googleapis.com/youtube/v3/search`;
+      const simpleParams = new URLSearchParams({
+        part: 'snippet',
+        q: query,
+        key: process.env.YOUTUBE_API_KEY,
+        type: 'video',
+        order: 'relevance',
+        maxResults: '1',
+        safeSearch: 'moderate',
+        videoEmbeddable: 'true'
+      });
 
-  return relevantVideos.length > 0 ? relevantVideos[0] : videoSuggestions[0];
+      const simpleResponse = await fetch(`${simpleApiUrl}?${simpleParams.toString()}`);
+      
+      if (simpleResponse.ok) {
+        const simpleData = await simpleResponse.json();
+        if (simpleData.items && simpleData.items.length > 0) {
+          const video = simpleData.items[0];
+          console.log(`Fallback search found: "${video.snippet.title}"`);
+          return {
+            id: video.id.videoId,
+            title: video.snippet.title,
+            channel: video.snippet.channelTitle,
+            description: video.snippet.description,
+            thumbnail: video.snippet.thumbnails.medium?.url || video.snippet.thumbnails.default?.url,
+            publishedAt: new Date(video.snippet.publishedAt).toLocaleDateString(),
+            relatedVideos: []
+          };
+        }
+      }
+    } catch (retryError) {
+      console.error('Retry search also failed:', retryError);
+    }
+    
+    // Final fallback to a known good educational video
+    return getFallbackVideo();
+  }
+}
+
+// Fallback video when YouTube API fails
+function getFallbackVideo() {
+  console.log('Using fallback educational video');
+  return {
+    id: "aircAruvnKk", // 3Blue1Brown Neural Networks - very popular and reliable
+    title: "But what is a Neural Network? | Deep learning, chapter 1",
+    channel: "3Blue1Brown",
+    description: "Subscribe for new videos every Friday! Neural networks can seem like a black box...",
+    thumbnail: "https://img.youtube.com/vi/aircAruvnKk/mqdefault.jpg",
+    publishedAt: "Oct 5, 2017",
+    relatedVideos: [
+      {
+        id: "IHZwWFHWa-w",
+        title: "Gradient descent, how neural networks learn | Deep learning, chapter 2",
+        channel: "3Blue1Brown",
+        description: "How do neural networks learn? In this video, we dive into the gradient descent algorithm...",
+        thumbnail: "https://img.youtube.com/vi/IHZwWFHWa-w/mqdefault.jpg",
+        publishedAt: "Oct 16, 2017"
+      },
+      {
+        id: "Ilg3gGewQ5U", 
+        title: "What is backpropagation really doing? | Deep learning, chapter 3",
+        channel: "3Blue1Brown",
+        description: "Backpropagation is the heart of neural network training...",
+        thumbnail: "https://img.youtube.com/vi/Ilg3gGewQ5U/mqdefault.jpg",
+        publishedAt: "Nov 3, 2017"
+      }
+    ]
+  };
 }
 
 // Socket.IO connection handling
@@ -369,7 +466,7 @@ io.on('connection', (socket) => {
       const perplexityResponse = await queryPerplexity(command, mode);
       
       // Get relevant YouTube video
-      const youtubeVideo = searchEducationalVideos(command, mode);
+      const youtubeVideo = await searchEducationalVideos(command, mode);
       
       console.log(`Generated response: "${perplexityResponse.content.substring(0, 100)}..."`);
       
@@ -400,8 +497,13 @@ io.on('connection', (socket) => {
           citations: [],
           reasoning: [],
           metadata: {
-            youtubeVideoId: youtubeVideo.id,
-            youtubeTitle: youtubeVideo.title,
+            youtubeVideoId: youtubeVideo?.id,
+            youtubeTitle: youtubeVideo?.title,
+            youtubeChannel: youtubeVideo?.channel,
+            youtubeDescription: youtubeVideo?.description,
+            youtubeThumbnail: youtubeVideo?.thumbnail,
+            youtubePublishedAt: youtubeVideo?.publishedAt,
+            youtubeRelatedVideos: youtubeVideo?.relatedVideos || [],
             tokensUsed: perplexityResponse.usage?.total_tokens || 0,
             responseTime: Date.now()
           }

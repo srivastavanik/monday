@@ -258,7 +258,7 @@ export function VoiceProcessingPanel({
                 </span>
               )}
             </div>
-            <div className="flex-1 bg-gradient-to-br from-[#091717] to-[#0A1A1A] rounded-2xl p-6 overflow-y-auto shadow-inner border border-[#20808D]/20 custom-scrollbar min-h-[150px]">
+            <div className="flex-1 bg-gradient-to-br from-[#091717] to-[#0A1A1A] rounded-2xl p-6 overflow-y-auto shadow-inner border border-[#20808D]/20 custom-scrollbar min-h-[150px] max-h-[400px]">
               {currentResponse || (!isTyping && !isThinking && !processingError) ? (
                 <div className="text-[#FBFAF4] text-sm leading-relaxed whitespace-pre-wrap font-mono tracking-wide">
                   {currentResponse}
