@@ -203,13 +203,7 @@ All API keys are pre-configured in the codebase:
 | Videos not loading | Verify YouTube API key and internet connection |
 | Mode not switching | Check console for transcript processing logs |
 
-## 📜 **License**
-
-MIT License - See LICENSE file for details.
-
-## 🤝 **Contributing**
-
-This is a contest submission. For questions or feedback, please open an issue.
+This is a hackathon submission to Perplexity Sonar (Devpost). Aiming for Most Creative / Fun + Best Deep Research.
 
 ---
 
