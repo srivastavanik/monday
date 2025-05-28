@@ -4,8 +4,11 @@ This is the working implementation of the Monday voice agent with all fixes appl
 
 ## Quick Start
 
-### 1. Navigate to Working Directory
+### 1. Clone and Navigate to Working Directory
 ```bash
+git clone https://github.com/srivastavanik/monday.git
+cd monday
+git checkout final
 cd nidsmonday
 ```
 
@@ -59,4 +62,9 @@ Go to: http://localhost:3000
 1. Refresh browser (Ctrl+F5)
 2. Allow microphone permissions
 3. Check both terminals are running
-4. Backend must start BEFORE frontend 
+4. Backend must start BEFORE frontend
+
+## Contest Submission
+This project is submitted to:
+- **Most Creative/Fun** category
+- **Best Deep Research** category 
