@@ -7,6 +7,15 @@ interface UseTextToSpeechProps {
   apiKey?: string;
 }
 
+export interface UseTextToSpeechReturn {
+  speak: (text: string) => Promise<void>;
+  speakProgress: (text: string) => Promise<void>;
+  stop: () => void;
+  isSpeaking: boolean;
+  initializeAudioContext: () => void;
+  isInitialized: boolean;
+}
+
 export function useTextToSpeech({ voiceId, apiKey }: UseTextToSpeechProps = {}) {
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [isInitialized, setIsInitialized] = useState(true); // Always initialized for hands-free
@@ -175,6 +184,36 @@ export function useTextToSpeech({ voiceId, apiKey }: UseTextToSpeechProps = {}) 
     }
   }, [apiKey, voiceId, fallbackToWebSpeech]);
 
+  // Speak progress updates (shorter, less intrusive)
+  const speakProgress = useCallback(async (text: string) => {
+    if (!isInitialized) {
+      console.warn('Audio context not initialized. Skipping progress speech.');
+      return;
+    }
+
+    // Skip if already speaking main content
+    if (isSpeaking) {
+      console.log('Already speaking, skipping progress update');
+      return;
+    }
+
+    // Use a simpler, faster approach for progress updates
+    try {
+      // Try Web Speech API first for quick progress updates
+      if ('speechSynthesis' in window) {
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.rate = 1.2; // Slightly faster for progress
+        utterance.pitch = 0.9; // Slightly lower pitch
+        utterance.volume = 0.8; // Slightly quieter
+        
+        speechSynthesis.speak(utterance);
+        return;
+      }
+    } catch (error) {
+      console.log('Progress speech failed, continuing silently');
+    }
+  }, [isInitialized, isSpeaking]);
+
   const stop = useCallback(() => {
     try {
       // Stop ElevenLabs audio
@@ -197,6 +236,7 @@ export function useTextToSpeech({ voiceId, apiKey }: UseTextToSpeechProps = {}) 
 
   return {
     speak,
+    speakProgress,
     stop,
     isSpeaking,
     initializeAudioContext,

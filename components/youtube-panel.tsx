@@ -29,18 +29,6 @@ export function YouTubePanel({ videoId, query, mode }: YouTubePanelProps) {
   const [searchError, setSearchError] = useState<string | null>(null)
   const [relatedVideos, setRelatedVideos] = useState<VideoData[]>([])
 
-  // Default educational video for demo
-  const defaultVideoData: VideoData = {
-    id: "pYT9F8_LFTM",
-    title: "Binary Search Algorithm - Complete Visual Tutorial",
-    description: "Master binary search with step-by-step visualization and real-world examples. Learn the O(log n) algorithm that efficiently searches sorted arrays and forms the foundation of many advanced data structures.",
-    channelName: "CS Dojo",
-    thumbnail: `https://img.youtube.com/vi/pYT9F8_LFTM/maxresdefault.jpg`,
-    duration: "12:18",
-    publishedAt: "2 years ago",
-    viewCount: "1.2M views"
-  }
-
   // Search for educational videos based on query
   const searchEducationalVideos = async (searchQuery: string) => {
     if (!searchQuery) return;
@@ -91,7 +79,6 @@ export function YouTubePanel({ videoId, query, mode }: YouTubePanelProps) {
     } catch (error) {
       console.error('Error searching for videos:', error);
       setSearchError('Failed to search for educational videos');
-      setVideoData(defaultVideoData);
     } finally {
       setIsSearching(false);
     }
@@ -114,13 +101,14 @@ export function YouTubePanel({ videoId, query, mode }: YouTubePanelProps) {
         viewCount: "Educational content"
       });
     } else {
-      // Use default video
-      setVideoData(defaultVideoData);
+      // Clear video data when no query
+      setVideoData(null);
+      setRelatedVideos([]);
     }
   }, [query, videoId]);
 
-  const currentVideoId = videoData?.id || defaultVideoData.id;
-  const embedUrl = `https://www.youtube.com/embed/${currentVideoId}?autoplay=0&controls=1&modestbranding=1&rel=0&cc_load_policy=1`;
+  const currentVideoId = videoData?.id;
+  const embedUrl = currentVideoId ? `https://www.youtube.com/embed/${currentVideoId}?autoplay=0&controls=1&modestbranding=1&rel=0&cc_load_policy=1` : '';
 
   const handleVideoSelect = (video: VideoData) => {
     setVideoData(video);
@@ -213,10 +201,24 @@ export function YouTubePanel({ videoId, query, mode }: YouTubePanelProps) {
             allowFullScreen
           ></iframe>
         ) : (
-          <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-gray-900 to-black">
-            <div className="text-center">
-              <Search className="w-8 h-8 text-gray-500 mx-auto mb-4" />
-              <p className="text-gray-500 text-sm">Ask Monday a question to find educational videos</p>
+          <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-[#091717] via-[#0A1A1A] to-[#091717]">
+            <div className="text-center max-w-md p-8">
+              <div className="mb-6">
+                <div className="w-20 h-20 mx-auto bg-gradient-to-br from-red-500/20 to-red-600/10 rounded-full flex items-center justify-center">
+                  <svg className="w-10 h-10 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                </div>
+              </div>
+              <h3 className="text-xl font-bold text-[#20808D] mb-3">Educational Videos</h3>
+              <p className="text-[#FBFAF4]/60 text-sm leading-relaxed mb-4">
+                Ask Monday a question to find relevant educational videos and tutorials
+              </p>
+              <div className="flex items-center justify-center gap-2 text-xs text-[#20808D]/50">
+                <div className="w-2 h-2 bg-red-500/30 rounded-full"></div>
+                <span>Ready to search</span>
+              </div>
             </div>
           </div>
         )}

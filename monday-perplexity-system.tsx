@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect, useCallback } from "react"
-import { BinaryTree3D } from "./components/binary-tree-3d"
+import { AdaptiveVisualizationPanel } from "./components/adaptive-visualization-panel"
 import { VoiceProcessingPanel } from "./components/voice-processing-panel"
 import { YouTubePanel } from "./components/youtube-panel"
 import { PerplexityLogo } from "./components/perplexity-logo"
@@ -51,6 +51,7 @@ interface WebSocketMessage {
     query?: string;
     citations?: any[];
     reasoning?: any[];
+    sources?: any[];
     metadata?: any;
   };
   error?: string;
@@ -85,9 +86,12 @@ export default function MondayPerplexitySystem() {
   const [isModeSwitching, setIsModeSwitching] = useState(false)
   const [liveTranscript, setLiveTranscript] = useState<string>("")
   const [lastProcessedTranscript, setLastProcessedTranscript] = useState<string>("")
+  const [progressSources, setProgressSources] = useState<any[]>([])
+  const [progressReasoning, setProgressReasoning] = useState<any[]>([])
+  const [progressCitations, setProgressCitations] = useState<any[]>([])
 
   // --- Text-to-Speech Hook with ElevenLabs API ---
-  const { speak, stop: stopSpeaking, isSpeaking, initializeAudioContext, isInitialized } = useTextToSpeech({
+  const { speak, speakProgress, stop: stopSpeaking, isSpeaking, initializeAudioContext, isInitialized } = useTextToSpeech({
     voiceId: "21m00Tcm4TlvDq8ikWAM", // Rachel voice
     apiKey: "sk_9454bca5ee475d45dc6e50bcb33bc3fb76f138e2191ff47d"
   });
@@ -357,15 +361,22 @@ export default function MondayPerplexitySystem() {
   const handleVoiceResponse = (message: WebSocketMessage) => {
     console.log("Handling voice response:", message);
     
-    // Immediately clear thinking state when response arrives
-    setIsThinking(false);
-    setProgressUpdates([]);
+    // Don't clear thinking state immediately - let the progress bar complete
+    // setIsThinking(false);
+    // Don't clear progress updates - we want to keep them visible
+    // setProgressUpdates([]);
+    // setProgressSources([]);
+    // setProgressReasoning([]);
+    // setProgressCitations([]);
     
     // Set the response text for progressive display
     if (message.message) {
       setFullResponseText(message.message);
       setIsReceiving(true);
       setCharIndex(0);
+      
+      // Mark thinking as complete but keep progress visible
+      setIsThinking(false);
       
       // Start speech after a brief delay to sync with text display
       // This allows the first few characters to appear before speech starts
@@ -380,6 +391,15 @@ export default function MondayPerplexitySystem() {
     if (message.data) {
       if (message.data.mode) {
         setCurrentMode(message.data.mode as "basic" | "reasoning" | "deep-research");
+      }
+      
+      // Update sources and citations from the final response
+      if (message.data.sources && message.data.sources.length > 0) {
+        setProgressSources(message.data.sources);
+      }
+      
+      if (message.data.citations && message.data.citations.length > 0) {
+        setProgressCitations(message.data.citations);
       }
       
       // Handle spatial panels
@@ -427,11 +447,32 @@ export default function MondayPerplexitySystem() {
   const handleProgressUpdate = (message: WebSocketMessage) => {
     console.log("Progress update:", message);
     if (message.update) {
-      // Only show brief progress updates, don't accumulate them
-      setProgressUpdates([message.update]);
+      // Only add update if it's not a duplicate of the last one
+      setProgressUpdates(prev => {
+        const lastUpdate = prev[prev.length - 1];
+        if (lastUpdate === message.update) {
+          return prev; // Skip duplicate
+        }
+        return [...prev, message.update];
+      });
       
-      // Don't update the current response with progress - keep it separate
-      // Progress updates are just for status, not for the final response content
+      // Speak the progress update
+      if (!isSpeaking && message.update) {
+        speakProgress(message.update);
+      }
+      
+      // Extract any sources, reasoning steps, or citations from the update
+      if (message.data) {
+        if (message.data.sources && message.data.sources.length > 0) {
+          setProgressSources(message.data.sources);
+        }
+        if (message.data.reasoning && message.data.reasoning.length > 0) {
+          setProgressReasoning(message.data.reasoning);
+        }
+        if (message.data.citations && message.data.citations.length > 0) {
+          setProgressCitations(message.data.citations);
+        }
+      }
     }
   };
 
@@ -570,7 +611,7 @@ export default function MondayPerplexitySystem() {
       switchToMode(modeDetection.mode, command, true);
     }
     
-    // Clear previous state immediately
+    // Clear previous state immediately - but only for new queries, not progress
     setApiError(null);
     setIsThinking(true);
     setIsReceiving(false);
@@ -578,7 +619,13 @@ export default function MondayPerplexitySystem() {
     setCurrentResponse("");
     setFullResponseText("");
     setCharIndex(0);
+    
+    // Always clear progress for new commands to avoid accumulation
     setProgressUpdates([]);
+    setProgressSources([]);
+    setProgressReasoning([]);
+    setProgressCitations([]);
+    
     setLiveTranscript(""); // Clear live transcript when processing
 
     // Send command via WebSocket immediately
@@ -627,6 +674,9 @@ export default function MondayPerplexitySystem() {
     setApiError(null);
     setSpatialPanels([]);
     setProgressUpdates([]);
+    setProgressSources([]);
+    setProgressReasoning([]);
+    setProgressCitations([]);
     setIsProcessingVoice(false);
     setConversationMode(false);
     
@@ -846,7 +896,16 @@ export default function MondayPerplexitySystem() {
         <div className="grid grid-cols-1 xl:grid-cols-12 gap-8 h-[800px]">
           <div className="xl:col-span-4 transform xl:-rotate-2 xl:scale-95 origin-right">
             <div className="h-full shadow-2xl shadow-[#20808D]/20">
-              <BinaryTree3D visualizationData={visualizationData} title="Query Visualization" /> 
+              <AdaptiveVisualizationPanel
+                mode={currentMode}
+                query={userTranscript}
+                visualizationData={visualizationData}
+                isThinking={isThinking}
+                progressUpdates={progressUpdates}
+                sources={progressSources}
+                reasoning={progressReasoning}
+                citations={progressCitations}
+              />
             </div>
           </div>
 

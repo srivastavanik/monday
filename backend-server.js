@@ -151,8 +151,8 @@ function detectVoiceMode(command) {
   return { mode: "basic", confidence: 0.3 };
 }
 
-// Perplexity API integration
-async function queryPerplexity(prompt, mode = 'basic') {
+// Enhanced Perplexity API integration with streaming support
+async function queryPerplexityStreaming(prompt, mode = 'basic', socket = null) {
   const modelMap = {
     'basic': 'sonar',
     'reasoning': 'sonar-reasoning-pro', 
@@ -162,6 +162,19 @@ async function queryPerplexity(prompt, mode = 'basic') {
   const model = modelMap[mode] || modelMap['basic'];
   
   console.log(`Querying Perplexity API with model: ${model} for prompt: "${prompt.substring(0, 50)}..."`);
+  
+  // Emit initial progress for reasoning/research modes
+  if (socket && (mode === 'reasoning' || mode === 'deep-research')) {
+    socket.emit(mode === 'reasoning' ? 'reasoning_progress' : 'research_progress', {
+      type: mode === 'reasoning' ? 'reasoning_progress' : 'research_progress',
+      update: mode === 'reasoning' ? 'Initializing reasoning engine...' : 'Starting comprehensive research...',
+      data: {
+        sources: [],
+        reasoning: [],
+        citations: []
+      }
+    });
+  }
   
   try {
     const response = await fetch('https://api.perplexity.ai/chat/completions', {
@@ -223,10 +236,14 @@ Always respond as Monday in a conversational, voice-appropriate manner. You are 
             content: prompt
           }
         ],
-        max_tokens: mode === 'deep-research' ? 2048 : 1024,
+        max_tokens: mode === 'deep-research' ? 4096 : mode === 'reasoning' ? 2048 : 1024,
         temperature: 0.2,
         top_p: 0.9,
-        stream: false
+        stream: mode !== 'basic', // Stream for reasoning and research modes
+        return_citations: mode === 'deep-research', // Request citations for deep research
+        return_sources: mode === 'deep-research', // Request sources for deep research
+        search_domain_filter: mode === 'deep-research' ? [] : undefined, // No domain restrictions for deep research
+        search_recency_filter: mode === 'deep-research' ? 'month' : undefined // Recent sources for deep research
       })
     });
 
@@ -236,18 +253,218 @@ Always respond as Monday in a conversational, voice-appropriate manner. You are 
       throw new Error(`Perplexity API error: ${response.status} - ${errorText}`);
     }
 
-    const data = await response.json();
-    console.log('Perplexity API response received successfully');
-    
-    // Filter out thinking tags from the response
-    let content = data.choices[0]?.message?.content || 'I apologize, but I didn\'t receive a proper response. Could you please try asking your question again?';
-    content = filterThinkingTags(content);
-    
-    return {
-      content: content,
-      model: model,
-      usage: data.usage
-    };
+    // Handle streaming response for reasoning/research modes
+    if (mode !== 'basic' && response.body) {
+      console.log('Processing streaming response...');
+      
+      // Read the full response
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let fullContent = '';
+      let sources = [];
+      let citations = [];
+      let reasoning = [];
+      let lastProgressUpdate = '';
+      let seenSources = new Set();
+      let seenCitations = new Set();
+      let thinkingSteps = [];
+      let currentThought = '';
+      
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        
+        const chunk = decoder.decode(value);
+        const lines = chunk.split('\n');
+        
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const data = line.slice(6);
+            if (data === '[DONE]') continue;
+            
+            try {
+              const parsed = JSON.parse(data);
+              
+              // Extract content
+              if (parsed.choices?.[0]?.delta?.content) {
+                const deltaContent = parsed.choices[0].delta.content;
+                fullContent += deltaContent;
+                currentThought += deltaContent;
+                
+                // For reasoning mode, extract thinking steps from the content
+                if (mode === 'reasoning' && deltaContent.includes('\n')) {
+                  const thoughtLines = currentThought.split('\n').filter(l => l.trim());
+                  for (const thought of thoughtLines) {
+                    if (thought.trim() && !thinkingSteps.includes(thought.trim())) {
+                      thinkingSteps.push(thought.trim());
+                      
+                      // Emit reasoning step
+                      if (socket) {
+                        socket.emit('reasoning_progress', {
+                          type: 'reasoning_progress',
+                          update: thought.trim(),
+                          data: {
+                            reasoning: thinkingSteps.map((t, i) => ({
+                              content: t,
+                              step: i + 1
+                            }))
+                          }
+                        });
+                      }
+                    }
+                  }
+                  currentThought = '';
+                }
+              }
+              
+              // Extract sources from metadata (for deep research)
+              if (parsed.choices?.[0]?.delta?.search_results) {
+                const searchResults = parsed.choices[0].delta.search_results;
+                for (const result of searchResults) {
+                  const sourceKey = result.url || result.title;
+                  if (sourceKey && !seenSources.has(sourceKey)) {
+                    seenSources.add(sourceKey);
+                    const source = {
+                      title: result.title || 'Research Source',
+                      url: result.url || '',
+                      description: result.snippet || result.description || '',
+                      domain: result.domain || new URL(result.url || 'http://example.com').hostname
+                    };
+                    sources.push(source);
+                    
+                    // Emit source update
+                    if (socket && mode === 'deep-research') {
+                      socket.emit('research_progress', {
+                        type: 'research_progress',
+                        update: `Analyzing: ${source.domain}`,
+                        data: {
+                          sources: sources,
+                          citations: citations
+                        }
+                      });
+                    }
+                  }
+                }
+              }
+              
+              // Extract web results (alternative source format)
+              if (parsed.choices?.[0]?.delta?.web_results) {
+                const webResults = parsed.choices[0].delta.web_results;
+                for (const result of webResults) {
+                  const sourceKey = result.url || result.title;
+                  if (sourceKey && !seenSources.has(sourceKey)) {
+                    seenSources.add(sourceKey);
+                    const source = {
+                      title: result.title || 'Web Source',
+                      url: result.url || '',
+                      description: result.snippet || '',
+                      domain: new URL(result.url || 'http://example.com').hostname
+                    };
+                    sources.push(source);
+                    
+                    // Emit source update
+                    if (socket && mode === 'deep-research') {
+                      socket.emit('research_progress', {
+                        type: 'research_progress',
+                        update: `Researching: ${source.domain}`,
+                        data: {
+                          sources: sources,
+                          citations: citations
+                        }
+                      });
+                    }
+                  }
+                }
+              }
+              
+              // Extract citations
+              if (parsed.choices?.[0]?.delta?.citations) {
+                for (const citation of parsed.choices[0].delta.citations) {
+                  const citationKey = citation.url || citation.title;
+                  if (citationKey && !seenCitations.has(citationKey)) {
+                    seenCitations.add(citationKey);
+                    citations.push({
+                      title: citation.title || citation.text || 'Citation',
+                      url: citation.url || '',
+                      author: citation.author || '',
+                      year: citation.year || ''
+                    });
+                  }
+                }
+              }
+              
+            } catch (e) {
+              // Ignore parse errors for incomplete chunks
+              console.log('Parse error (expected for partial chunks):', e.message);
+            }
+          }
+        }
+      }
+      
+      // Process any remaining thought
+      if (currentThought.trim() && mode === 'reasoning' && !thinkingSteps.includes(currentThought.trim())) {
+        thinkingSteps.push(currentThought.trim());
+        if (socket) {
+          socket.emit('reasoning_progress', {
+            type: 'reasoning_progress',
+            update: currentThought.trim(),
+            data: {
+              reasoning: thinkingSteps.map((t, i) => ({
+                content: t,
+                step: i + 1
+              }))
+            }
+          });
+        }
+      }
+      
+      // Filter out thinking tags from the response
+      fullContent = filterThinkingTags(fullContent);
+      
+      // Final progress update
+      if (socket) {
+        const finalUpdate = mode === 'reasoning' 
+          ? 'Reasoning complete. Formulating response...'
+          : `Research complete. Analyzed ${sources.length} sources.`;
+          
+        socket.emit(mode === 'reasoning' ? 'reasoning_progress' : 'research_progress', {
+          type: mode === 'reasoning' ? 'reasoning_progress' : 'research_progress',
+          update: finalUpdate,
+          data: {
+            sources: sources,
+            citations: citations,
+            reasoning: mode === 'reasoning' ? thinkingSteps.map((t, i) => ({
+              content: t,
+              step: i + 1
+            })) : []
+          }
+        });
+      }
+      
+      return {
+        content: fullContent || 'I apologize, but I didn\'t receive a proper response. Could you please try asking your question again?',
+        model: model,
+        usage: { total_tokens: 0 }, // Streaming doesn't provide token usage
+        sources: sources,
+        citations: citations
+      };
+    } else {
+      // Non-streaming response for basic mode
+      const data = await response.json();
+      console.log('Perplexity API response received successfully');
+      
+      // Filter out thinking tags from the response
+      let content = data.choices[0]?.message?.content || 'I apologize, but I didn\'t receive a proper response. Could you please try asking your question again?';
+      content = filterThinkingTags(content);
+      
+      return {
+        content: content,
+        model: model,
+        usage: data.usage,
+        sources: [],
+        citations: []
+      };
+    }
   } catch (error) {
     console.error('Perplexity API error:', error);
     throw error; // Re-throw to handle in the calling function
@@ -365,8 +582,8 @@ io.on('connection', (socket) => {
       
       console.log(`Processing command in ${mode} mode (confidence: ${modeDetection.confidence}): "${command}"`);
       
-      // Query Perplexity API with the actual command (removed progress update delay)
-      const perplexityResponse = await queryPerplexity(command, mode);
+      // Query Perplexity API with streaming support for reasoning/research modes
+      const perplexityResponse = await queryPerplexityStreaming(command, mode, socket);
       
       // Get relevant YouTube video
       const youtubeVideo = searchEducationalVideos(command, mode);
@@ -397,8 +614,9 @@ io.on('connection', (socket) => {
           mode: mode,
           model: perplexityResponse.model,
           query: command,
-          citations: [],
+          citations: perplexityResponse.citations || [],
           reasoning: [],
+          sources: perplexityResponse.sources || [],
           metadata: {
             youtubeVideoId: youtubeVideo.id,
             youtubeTitle: youtubeVideo.title,
