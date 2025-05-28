@@ -705,9 +705,7 @@ class VoiceSystemController {
     }
     
     // Reset speech synthesis
-    if (window.speechSynthesis) {
-      window.speechSynthesis.cancel()
-    }
+    // Removed: window.speechSynthesis.cancel() - only using ElevenLabs
     
     // Clear system status but preserve conversation state
     this.systemStatus = {

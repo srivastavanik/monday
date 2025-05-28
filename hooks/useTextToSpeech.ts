@@ -37,182 +37,161 @@ export function useTextToSpeech({ voiceId, apiKey }: UseTextToSpeechProps = {}) 
       // Try to resume audio context but don't block on it
       if (audioContextRef.current.state === 'suspended') {
         audioContextRef.current.resume().catch((error) => {
-          console.log('Audio context resume failed, using Web Speech API:', error);
+          console.log('Audio context resume failed:', error);
         });
       }
     } catch (error) {
-      console.log('Audio context initialization failed, using Web Speech API:', error);
-    }
-  }, []);
-
-  const fallbackToWebSpeech = useCallback((text: string) => {
-    if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
-      console.log('Web Speech API not available');
-      setIsSpeaking(false);
-      return;
-    }
-
-    try {
-      // Cancel any ongoing speech
-      window.speechSynthesis.cancel();
-      
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.rate = 0.9;
-      utterance.pitch = 1;
-      utterance.volume = 0.8;
-      
-      utterance.onstart = () => {
-        console.log('Web Speech API started speaking');
-      };
-      
-      utterance.onend = () => {
-        console.log('Web Speech API finished speaking');
-        setIsSpeaking(false);
-      };
-      
-      utterance.onerror = (event) => {
-        console.log('Web Speech API error:', event.error);
-        setIsSpeaking(false);
-      };
-      
-      // Speak immediately for hands-free operation
-      window.speechSynthesis.speak(utterance);
-      
-    } catch (error) {
-      console.log('Web Speech API failed:', error);
-      setIsSpeaking(false);
+      console.log('Audio context initialization failed:', error);
     }
   }, []);
 
   const speak = useCallback(async (text: string) => {
-    if (!text.trim()) return;
+    console.log("TTS speak called with:", { 
+      textLength: text?.length, 
+      isInitialized, 
+      isSpeaking, 
+      hasApiKey: !!apiKey,
+      voiceId 
+    });
+    
+    if (!isInitialized) {
+      console.log('Audio context not initialized, skipping TTS');
+      return;
+    }
+
+    if (isSpeaking) {
+      console.log('Already speaking, ignoring new request');
+      return;
+    }
+
+    if (!apiKey || !voiceId) {
+      console.error('Missing ElevenLabs API key or voice ID, cannot speak');
+      return;
+    }
+
+    setIsSpeaking(true);
     
     try {
-      // Stop any current speech
-      if (currentAudioRef.current) {
-        currentAudioRef.current.pause();
-        currentAudioRef.current = null;
-      }
+      console.log('Making request to ElevenLabs API...');
       
-      setIsSpeaking(true);
-      
-      // Always try ElevenLabs first if credentials are provided
-      if (apiKey && voiceId) {
-        try {
-          console.log('Attempting to use ElevenLabs TTS...');
-          const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
-            method: 'POST',
-            headers: {
-              'Accept': 'audio/mpeg',
-              'Content-Type': 'application/json',
-              'xi-api-key': apiKey,
-            },
-            body: JSON.stringify({
-              text: text,
-              model_id: 'eleven_monolingual_v1',
-              voice_settings: {
-                stability: 0.5,
-                similarity_boost: 0.5,
-              },
-            }),
-          });
-
-          if (response.ok) {
-            console.log('ElevenLabs TTS response received successfully');
-            const audioBlob = await response.blob();
-            const audioUrl = URL.createObjectURL(audioBlob);
-            const audio = new Audio(audioUrl);
-            currentAudioRef.current = audio;
-            
-            // Set up promise-based playback
-            return new Promise<void>((resolve, reject) => {
-              audio.onended = () => {
-                console.log('ElevenLabs audio finished playing');
-                setIsSpeaking(false);
-                URL.revokeObjectURL(audioUrl);
-                currentAudioRef.current = null;
-                resolve();
-              };
-              
-              audio.onerror = (error) => {
-                console.log('ElevenLabs audio playback error:', error);
-                setIsSpeaking(false);
-                currentAudioRef.current = null;
-                URL.revokeObjectURL(audioUrl);
-                reject(error);
-              };
-              
-              // Try to play the audio
-              console.log('Playing ElevenLabs audio...');
-              const playPromise = audio.play();
-              
-              if (playPromise !== undefined) {
-                playPromise
-                  .then(() => {
-                    console.log('ElevenLabs audio started playing successfully');
-                  })
-                  .catch((error) => {
-                    console.log('ElevenLabs play() promise rejected:', error);
-                    // Don't immediately fall back - let the audio element try to recover
-                    // Only reject if it's a real error, not a temporary interruption
-                    if (error.name !== 'AbortError') {
-                      reject(error);
-                    }
-                  });
-              }
-            });
-          } else {
-            console.log(`ElevenLabs API error: ${response.status} ${response.statusText}`);
-            const errorText = await response.text();
-            console.log('ElevenLabs error response:', errorText);
-            throw new Error(`ElevenLabs API error: ${response.status}`);
+      const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
+        method: 'POST',
+        headers: {
+          'Accept': 'audio/mpeg',
+          'Content-Type': 'application/json',
+          'xi-api-key': apiKey
+        },
+        body: JSON.stringify({
+          text,
+          model_id: 'eleven_monolingual_v1',
+          voice_settings: {
+            stability: 0.5,
+            similarity_boost: 0.5
           }
-        } catch (error) {
-          console.log('ElevenLabs TTS failed, falling back to Web Speech API:', error);
-          // Fall back to Web Speech API
-          fallbackToWebSpeech(text);
+        })
+      });
+
+      if (!response.ok) {
+        if (response.status === 401) {
+          console.error('ElevenLabs API authentication failed (401). Please check your API key.');
+          console.error('The API key may be invalid, expired, or incorrectly formatted.');
+          console.error('To get a valid API key:');
+          console.error('1. Sign up or log in at https://elevenlabs.io');
+          console.error('2. Go to your profile settings');
+          console.error('3. Navigate to the API Keys section');
+          console.error('4. Generate a new API key and update it in the code');
+          console.warn('Continuing without voice output...');
+        } else {
+          console.error(`ElevenLabs API error: ${response.status} ${response.statusText}`);
         }
-      } else {
-        console.log('No ElevenLabs credentials provided, using Web Speech API');
-        // Use Web Speech API if no ElevenLabs credentials
-        fallbackToWebSpeech(text);
+        throw new Error(`ElevenLabs API error: ${response.status}`);
       }
+
+      console.log('ElevenLabs API response received, creating audio...');
+      
+      const audioBlob = await response.blob();
+      const audioUrl = URL.createObjectURL(audioBlob);
+      
+      const audio = new Audio(audioUrl);
+      currentAudioRef.current = audio;
+      
+      audio.volume = 0.8;
+      
+      audio.onended = () => {
+        console.log('ElevenLabs audio playback ended');
+        setIsSpeaking(false);
+        URL.revokeObjectURL(audioUrl);
+        currentAudioRef.current = null;
+      };
+      
+      audio.onerror = (e) => {
+        console.error('ElevenLabs audio playback error:', e);
+        setIsSpeaking(false);
+        URL.revokeObjectURL(audioUrl);
+        currentAudioRef.current = null;
+      };
+      
+      console.log('Starting ElevenLabs audio playback...');
+      await audio.play();
+      console.log('ElevenLabs audio playback started successfully');
       
     } catch (error) {
-      console.error('Text-to-speech error:', error);
+      console.error('ElevenLabs TTS error:', error);
       setIsSpeaking(false);
+      // Don't throw the error, just log it so the app continues to work
     }
-  }, [apiKey, voiceId, fallbackToWebSpeech]);
+  }, [voiceId, apiKey, isSpeaking, isInitialized]);
 
-  // Speak progress updates (shorter, less intrusive)
   const speakProgress = useCallback(async (text: string) => {
-    if (!isInitialized) {
-      console.warn('Audio context not initialized. Skipping progress speech.');
+    // For progress updates, we'll use a quieter, shorter version
+    if (!isInitialized || isSpeaking || !apiKey || !voiceId) {
       return;
     }
 
-    // Skip if already speaking main content
-    if (isSpeaking) {
-      console.log('Already speaking, skipping progress update');
-      return;
-    }
-
-    // Use a simpler, faster approach for progress updates
     try {
-      // Try Web Speech API first for quick progress updates
-      if ('speechSynthesis' in window) {
-        const utterance = new SpeechSynthesisUtterance(text);
-        utterance.rate = 1.2; // Slightly faster for progress
-        utterance.pitch = 0.9; // Slightly lower pitch
-        utterance.volume = 0.8; // Slightly quieter
-        
-        speechSynthesis.speak(utterance);
-        return;
+      // Use ElevenLabs for progress updates too
+      const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
+        method: 'POST',
+        headers: {
+          'Accept': 'audio/mpeg',
+          'Content-Type': 'application/json',
+          'xi-api-key': apiKey
+        },
+        body: JSON.stringify({
+          text,
+          model_id: 'eleven_monolingual_v1',
+          voice_settings: {
+            stability: 0.7,
+            similarity_boost: 0.3
+          }
+        })
+      });
+
+      if (!response.ok) {
+        if (response.status === 401) {
+          console.error('ElevenLabs API authentication failed for progress update');
+          // Silently fail for progress updates to avoid spamming console
+        }
+        throw new Error(`ElevenLabs API error: ${response.status}`);
       }
+
+      const audioBlob = await response.blob();
+      const audioUrl = URL.createObjectURL(audioBlob);
+      
+      // Create new audio element for progress
+      const audio = new Audio(audioUrl);
+      audio.volume = 0.5; // Quieter for progress updates
+      
+      audio.onended = () => {
+        URL.revokeObjectURL(audioUrl);
+      };
+      
+      await audio.play();
     } catch (error) {
-      console.log('Progress speech failed, continuing silently');
+      console.error('Progress TTS error:', error);
+      // No fallback - just log the error
     }
-  }, [isInitialized, isSpeaking]);
+  }, [voiceId, apiKey, isSpeaking, isInitialized]);
 
   const stop = useCallback(() => {
     try {
@@ -220,11 +199,6 @@ export function useTextToSpeech({ voiceId, apiKey }: UseTextToSpeechProps = {}) 
       if (currentAudioRef.current) {
         currentAudioRef.current.pause();
         currentAudioRef.current = null;
-      }
-      
-      // Stop Web Speech API
-      if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-        window.speechSynthesis.cancel();
       }
       
       setIsSpeaking(false);

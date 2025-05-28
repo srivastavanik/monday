@@ -33,7 +33,7 @@ export function VoiceProcessingPanel({
 }: VoiceProcessingPanelProps) {
   const [audioWaves, setAudioWaves] = useState([1, 1, 1, 1, 1, 1, 1, 1, 1])
   const [animatedProcessingSteps, setAnimatedProcessingSteps] = useState<string[]>([])
-
+  
   useEffect(() => {
     const waveInterval = setInterval(() => {
       if (isTyping || isThinking || voiceActive) {
@@ -44,7 +44,7 @@ export function VoiceProcessingPanel({
     }, 100)
     return () => clearInterval(waveInterval)
   }, [isTyping, isThinking, voiceActive])
-
+  
   useEffect(() => {
     if (isThinking) {
       const modeSpecificSteps = {
@@ -87,7 +87,7 @@ export function VoiceProcessingPanel({
       setAnimatedProcessingSteps([])
     }
   }, [isThinking, mode])
-
+  
   const getModeConfig = () => {
     switch (mode) {
       case "reasoning":
@@ -120,7 +120,7 @@ export function VoiceProcessingPanel({
                        isThinking ? "Processing" : 
                        isTyping ? "Speaking" : 
                        voiceActive ? "Listening" : "Ready"
-
+  
   return (
     <div className="h-full flex flex-col bg-gradient-to-br from-[#091717] via-[#0A1A1A] to-[#091717] border border-[#20808D]/30 rounded-3xl overflow-hidden shadow-2xl backdrop-blur-xl text-[#FBFAF4]">
       {/* Header */}
@@ -150,7 +150,7 @@ export function VoiceProcessingPanel({
           ))}
         </div>
       </div>
-
+      
       {/* Content Area */}
       <div className="flex-1 p-6 overflow-hidden flex flex-col">
         {/* Mode Switch Message */}
@@ -163,14 +163,13 @@ export function VoiceProcessingPanel({
           </div>
         )}
 
-        {isThinking ? (
+        {isThinking && (mode === 'reasoning' || mode === 'deep-research') ? (
           <div className="space-y-6 flex-1 flex flex-col justify-center items-center">
             <div className="flex items-center gap-4 mb-8">
               <div className="relative">
                 <Loader2 className="w-8 h-8 text-[#20808D] animate-spin" />
                 {mode === 'reasoning' && <Brain className="w-4 h-4 text-purple-400 absolute -top-1 -right-1" />}
                 {mode === 'deep-research' && <Activity className="w-4 h-4 text-blue-400 absolute -top-1 -right-1" />}
-                {mode === 'basic' && <Zap className="w-4 h-4 text-green-400 absolute -top-1 -right-1" />}
               </div>
               <div className="flex flex-col">
                 <span className="text-[#20808D] font-bold text-xl">PROCESSING YOUR REQUEST</span>
@@ -276,7 +275,7 @@ export function VoiceProcessingPanel({
           </div>
         )}
       </div>
-
+      
       {/* Enhanced Status Bar */}
       <div className="bg-gradient-to-r from-[#20808D]/10 to-[#20808D]/5 border-t border-[#20808D]/30 p-4">
         <div className="flex items-center justify-between text-xs">

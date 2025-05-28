@@ -348,7 +348,7 @@ function layoutKnowledge(node: ConceptNode, depth = 0, xOffset = 0, yOffset = 0,
       Math.sin(angle) * radius * 0.5,
       Math.sin(angle) * radius * 0.3
     ]
-  } else {
+      } else {
     // Subsequent levels spread out more
     position = [xOffset, yOffset + depth * ySpacing, depth * 0.5]
   }

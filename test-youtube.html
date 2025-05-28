@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YouTube Panel Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #0a1a1a;
+            color: #fbfaf4;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        h1 {
+            color: #20808d;
+            text-align: center;
+        }
+        .test-section {
+            background: rgba(32, 128, 141, 0.1);
+            border: 1px solid rgba(32, 128, 141, 0.3);
+            border-radius: 10px;
+            padding: 20px;
+            margin: 20px 0;
+        }
+        .test-button {
+            background: #20808d;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        .test-button:hover {
+            background: #2a9aa8;
+        }
+        .status {
+            margin-top: 10px;
+            padding: 10px;
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 5px;
+        }
+        .success {
+            color: #4ade80;
+        }
+        .error {
+            color: #f87171;
+        }
+        .info {
+            color: #60a5fa;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Monday Voice Agent - YouTube Integration Test</h1>
+        
+        <div class="test-section">
+            <h2>YouTube Search Test</h2>
+            <p>Test the YouTube Data API integration for different modes and queries.</p>
+            
+            <div>
+                <h3>Basic Mode Tests:</h3>
+                <button class="test-button" onclick="testYouTubeSearch('coffee brewing techniques', 'basic')">
+                    Search: Coffee Brewing
+                </button>
+                <button class="test-button" onclick="testYouTubeSearch('quantum physics basics', 'basic')">
+                    Search: Quantum Physics
+                </button>
+                <button class="test-button" onclick="testYouTubeSearch('machine learning tutorial', 'basic')">
+                    Search: Machine Learning
+                </button>
+            </div>
+            
+            <div>
+                <h3>Reasoning Mode Tests:</h3>
+                <button class="test-button" onclick="testYouTubeSearch('why does coffee taste bitter', 'reasoning')">
+                    Analyze: Coffee Taste
+                </button>
+                <button class="test-button" onclick="testYouTubeSearch('how neural networks work', 'reasoning')">
+                    Analyze: Neural Networks
+                </button>
+            </div>
+            
+            <div>
+                <h3>Deep Research Mode Tests:</h3>
+                <button class="test-button" onclick="testYouTubeSearch('history of coffee cultivation', 'deep-research')">
+                    Research: Coffee History
+                </button>
+                <button class="test-button" onclick="testYouTubeSearch('evolution of artificial intelligence', 'deep-research')">
+                    Research: AI Evolution
+                </button>
+            </div>
+            
+            <div id="search-status" class="status"></div>
+        </div>
+        
+        <div class="test-section">
+            <h2>Backend Connection Test</h2>
+            <button class="test-button" onclick="testBackendConnection()">Test Backend Connection</button>
+            <button class="test-button" onclick="testWebSocket()">Test WebSocket Connection</button>
+            <div id="connection-status" class="status"></div>
+        </div>
+        
+        <div class="test-section">
+            <h2>Voice Command Simulation</h2>
+            <p>Simulate voice commands to test the full flow.</p>
+            <button class="test-button" onclick="simulateVoiceCommand('tell me about coffee', 'basic')">
+                Basic: "tell me about coffee"
+            </button>
+            <button class="test-button" onclick="simulateVoiceCommand('think about why coffee is popular', 'reasoning')">
+                Reasoning: "think about why coffee is popular"
+            </button>
+            <button class="test-button" onclick="simulateVoiceCommand('research into coffee cultivation methods', 'deep-research')">
+                Research: "research into coffee cultivation methods"
+            </button>
+            <div id="voice-status" class="status"></div>
+        </div>
+    </div>
+
+    <script>
+        const YOUTUBE_API_KEY = "AIzaSyDn_zCV8AGjkQFufH7RDGkSiXD75-2Q39M";
+        const BACKEND_URL = "http://localhost:3001";
+        
+        function updateStatus(elementId, message, type = 'info') {
+            const element = document.getElementById(elementId);
+            element.className = `status ${type}`;
+            element.innerHTML = `<strong>${new Date().toLocaleTimeString()}:</strong> ${message}`;
+        }
+        
+        async function testYouTubeSearch(query, mode) {
+            updateStatus('search-status', `Searching for "${query}" in ${mode} mode...`, 'info');
+            
+            try {
+                // Enhance query based on mode (same logic as YouTube panel)
+                let enhancedQuery = query;
+                if (mode === 'reasoning') {
+                    enhancedQuery = `${query} explained analysis tutorial`;
+                } else if (mode === 'deep-research') {
+                    enhancedQuery = `${query} comprehensive research documentary`;
+                } else {
+                    enhancedQuery = `${query} tutorial guide`;
+                }
+                
+                const searchUrl = `https://www.googleapis.com/youtube/v3/search?` + new URLSearchParams({
+                    part: 'snippet',
+                    q: enhancedQuery,
+                    type: 'video',
+                    maxResults: '5',
+                    order: 'relevance',
+                    videoDuration: mode === 'deep-research' ? 'long' : 'medium',
+                    key: YOUTUBE_API_KEY
+                });
+                
+                const response = await fetch(searchUrl);
+                const data = await response.json();
+                
+                if (data.items && data.items.length > 0) {
+                    const videoList = data.items.map((item, index) => 
+                        `${index + 1}. ${item.snippet.title} (${item.snippet.channelTitle})`
+                    ).join('<br>');
+                    
+                    updateStatus('search-status', 
+                        `Found ${data.items.length} videos for "${query}" (${mode} mode):<br>${videoList}`, 
+                        'success'
+                    );
+                } else {
+                    updateStatus('search-status', `No videos found for "${query}"`, 'error');
+                }
+            } catch (error) {
+                updateStatus('search-status', `Error searching YouTube: ${error.message}`, 'error');
+            }
+        }
+        
+        async function testBackendConnection() {
+            updateStatus('connection-status', 'Testing backend connection...', 'info');
+            
+            try {
+                const response = await fetch(`${BACKEND_URL}/health`);
+                const data = await response.json();
+                
+                updateStatus('connection-status', 
+                    `Backend is ${data.status}! Perplexity API: ${data.perplexityApiConfigured ? 'Configured' : 'Not configured'}`, 
+                    'success'
+                );
+            } catch (error) {
+                updateStatus('connection-status', `Backend connection failed: ${error.message}`, 'error');
+            }
+        }
+        
+        function testWebSocket() {
+            updateStatus('connection-status', 'Testing WebSocket connection...', 'info');
+            
+            const socket = new WebSocket(`ws://localhost:3001`);
+            
+            socket.onopen = () => {
+                updateStatus('connection-status', 'WebSocket connected successfully!', 'success');
+                socket.close();
+            };
+            
+            socket.onerror = (error) => {
+                updateStatus('connection-status', `WebSocket connection failed: ${error.type}`, 'error');
+            };
+        }
+        
+        async function simulateVoiceCommand(command, expectedMode) {
+            updateStatus('voice-status', `Simulating voice command: "${command}"`, 'info');
+            
+            try {
+                // First test if command would trigger correct mode
+                const detectedMode = detectMode(command);
+                
+                updateStatus('voice-status', 
+                    `Command detected as ${detectedMode} mode (expected: ${expectedMode}).<br>` +
+                    `This command would:<br>` +
+                    `1. Send query to Perplexity ${detectedMode === 'basic' ? 'Sonar' : detectedMode === 'reasoning' ? 'Sonar Reasoning Pro' : 'Sonar Deep Research'}<br>` +
+                    `2. Search YouTube for relevant videos<br>` +
+                    `3. Display response with voice output via ElevenLabs`,
+                    detectedMode === expectedMode ? 'success' : 'error'
+                );
+            } catch (error) {
+                updateStatus('voice-status', `Error: ${error.message}`, 'error');
+            }
+        }
+        
+        function detectMode(command) {
+            const commandLower = command.toLowerCase().trim();
+            
+            if (commandLower.includes("think about")) {
+                return "reasoning";
+            }
+            
+            if (commandLower.includes("research into")) {
+                return "deep-research";
+            }
+            
+            return "basic";
+        }
+    </script>
+</body>
+</html> 
