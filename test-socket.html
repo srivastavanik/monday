@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Socket.IO Test</title>
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+</head>
+<body>
+    <h1>Socket.IO Connection Test</h1>
+    <div id="status">Connecting...</div>
+    <button onclick="sendTest()">Send Test Message</button>
+    <div id="messages"></div>
+
+    <script>
+        const socket = io('http://localhost:3001', {
+            transports: ['polling', 'websocket']
+        });
+
+        const status = document.getElementById('status');
+        const messages = document.getElementById('messages');
+
+        socket.on('connect', () => {
+            status.innerHTML = '✅ Connected! Socket ID: ' + socket.id;
+            console.log('Connected to backend');
+        });
+
+        socket.on('disconnect', () => {
+            status.innerHTML = '❌ Disconnected';
+            console.log('Disconnected from backend');
+        });
+
+        socket.on('connect_error', (error) => {
+            status.innerHTML = '❌ Connection Error: ' + error.message;
+            console.error('Connection error:', error);
+        });
+
+        socket.on('voice_response', (data) => {
+            const msg = document.createElement('div');
+            msg.textContent = 'Response: ' + JSON.stringify(data);
+            messages.appendChild(msg);
+        });
+
+        function sendTest() {
+            socket.emit('voice_command', {
+                type: 'voice_command',
+                command: 'test message',
+                timestamp: Date.now()
+            });
+        }
+    </script>
+</body>
+</html> 

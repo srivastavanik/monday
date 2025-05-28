@@ -16,10 +16,14 @@ console.log('Initializing Socket.IO server...');
 const io = new Server(server, {
   cors: {
     origin: "*", // Allow all origins for debugging
-    methods: ["GET", "POST"],
-    credentials: true
+    methods: ["GET", "POST", "OPTIONS"],
+    credentials: true,
+    allowedHeaders: ["Content-Type"]
   },
-  transports: ['websocket', 'polling'] // Explicitly define transports
+  transports: ['websocket', 'polling'], // Prefer websocket
+  pingTimeout: 60000, // 60 seconds
+  pingInterval: 25000, // 25 seconds
+  allowEIO3: true // Allow older Socket.IO clients
 });
 
 // Debug middleware for Socket.IO
@@ -56,6 +60,21 @@ app.get('/health', (req, res) => {
     uptime: process.uptime(),
     perplexityApiConfigured: !!process.env.PERPLEXITY_API_KEY,
     socketConnections: io.engine.clientsCount || 0
+  });
+});
+
+// Socket.IO test endpoint
+app.get('/socket-test', (req, res) => {
+  res.json({
+    socketIO: 'ready',
+    engine: io.engine ? 'initialized' : 'not initialized',
+    transports: ['polling', 'websocket'],
+    cors: {
+      origin: '*',
+      credentials: true
+    },
+    activeConnections: io.engine ? io.engine.clientsCount : 0,
+    url: 'ws://localhost:3001'
   });
 });
 
@@ -322,7 +341,7 @@ io.on('connection', (socket) => {
       // If this is just the activation (Hey Monday without additional content), respond briefly
       if (isActivation && (!command || command.trim().length === 0)) {
         socket.emit('voice_response', {
-          message: "Yes? I'm listening.",
+          message: "Hi! I'm Monday, your learning assistant powered by Perplexity Sonar. What would you like to dive into today?",
           data: {
             panels: [],
             mode: 'basic',
@@ -395,6 +414,11 @@ io.on('connection', (socket) => {
         error: `I encountered an issue: ${error.message}. Please try again.`
       });
     }
+  });
+
+  // Heartbeat handler to keep connection alive
+  socket.on('heartbeat', (data) => {
+    socket.emit('heartbeat_ack', { timestamp: Date.now(), received: data.timestamp });
   });
 
   socket.on('disconnect', () => {

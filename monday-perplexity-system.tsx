@@ -63,7 +63,6 @@ interface WebSocketMessage {
 const MONDAY_WEBSOCKET_URL = "http://localhost:3001";
 
 export default function MondayPerplexitySystem() {
-  console.log("Monday System initializing with WebSocket URL:", MONDAY_WEBSOCKET_URL);
   const [currentMode, setCurrentMode] = useState<"basic" | "reasoning" | "deep-research">("basic")
   const [currentResponse, setCurrentResponse] = useState("")
   const [fullResponseText, setFullResponseText] = useState("")
@@ -94,38 +93,42 @@ export default function MondayPerplexitySystem() {
   });
 
   // --- WebSocket Hook --- 
+  const handleWebSocketOpen = useCallback(() => {
+    console.log("WebSocket connected to Monday backend")
+    setApiError(null)
+  }, []);
+
+  const handleWebSocketClose = useCallback(() => {
+    console.log("WebSocket disconnected from Monday backend")
+    setApiError("Connection to Monday backend lost. Attempting to reconnect...")
+  }, []);
+
+  const handleWebSocketError = useCallback((event: Event) => {
+    console.error("WebSocket error:", event)
+    setApiError("Failed to connect to Monday backend. Please check if the backend is running on port 3001.")
+  }, []);
+
   const { 
     isConnected: wsIsConnected,
     lastMessage: wsLastMessage,
     sendMessage: wsSendMessage,
-    error: wsError 
+    error: wsError,
+    reconnect: wsReconnect 
   } = useMondayWebSocket({
     socketUrl: MONDAY_WEBSOCKET_URL,
-    onOpen: () => {
-      console.log("WebSocket connected to Monday backend")
-      setApiError(null)
-    },
-    onClose: () => {
-      console.log("WebSocket disconnected from Monday backend")
-      setApiError("Connection to Monday backend lost. Attempting to reconnect...")
-    },
-    onError: (event) => {
-      console.error("WebSocket error:", event)
-      setApiError("Failed to connect to Monday backend. Please check if the backend is running on port 3001.")
-    },
+    onOpen: handleWebSocketOpen,
+    onClose: handleWebSocketClose,
+    onError: handleWebSocketError,
   });
 
-  // Check WebSocket connection status
+  // Check WebSocket connection status - only update when truly changed
   useEffect(() => {
-    console.log("WebSocket connection state changed:", { wsIsConnected, wsError });
     if (wsError) {
       console.error("WebSocket connection error detected:", wsError);
-      setApiError("Cannot connect to Monday backend. Please ensure the backend server is running on port 3001.");
+      setApiError("Cannot connect to Monday backend. Please ensure the backend server is running on port 3001. You can start it with: node backend-server.js");
     } else if (wsIsConnected) {
-      console.log("WebSocket successfully connected!");
+      console.log("✅ WebSocket successfully connected!");
       setApiError(null);
-    } else {
-      console.log("WebSocket not connected yet");
     }
   }, [wsIsConnected, wsError]);
 
@@ -145,10 +148,13 @@ export default function MondayPerplexitySystem() {
     if (typeof window !== 'undefined') {
       console.log("Component mounted, starting hands-free voice recognition");
       
-      // Start listening immediately after component mounts
-      if (browserSupportsSpeechRecognition && isMicrophoneAvailable) {
-        startAutomaticListening();
-      }
+      // Add a small delay to ensure Socket.IO is ready
+      setTimeout(() => {
+        // Start listening immediately after component mounts
+        if (browserSupportsSpeechRecognition && isMicrophoneAvailable) {
+          startAutomaticListening();
+        }
+      }, 1000);
     }
   }, [])
 
@@ -271,7 +277,7 @@ export default function MondayPerplexitySystem() {
       // Use Web Speech API directly for better compatibility
       if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
         try {
-          const utterance = new SpeechSynthesisUtterance("Yes? I'm listening.");
+          const utterance = new SpeechSynthesisUtterance("Hi! I'm Monday, your learning assistant powered by Perplexity Sonar. What would you like to dive into today?");
           utterance.rate = 0.9;
           utterance.volume = 0.8;
           window.speechSynthesis.speak(utterance);
@@ -682,12 +688,26 @@ export default function MondayPerplexitySystem() {
           
           {/* Connection Status */}
           <div className="flex items-center justify-center gap-2 mb-4">
-            <div className={`w-3 h-3 rounded-full ${wsIsConnected ? 'bg-green-400 animate-pulse' : 'bg-red-400'}`}></div>
+            <div className={`w-3 h-3 rounded-full transition-colors duration-300 ${wsIsConnected ? 'bg-green-400 animate-pulse' : 'bg-red-400'}`}></div>
             <span className="text-sm text-[#20808D]">
-              {wsIsConnected ? 'Connected to Monday Backend' : 'Connecting to Monday Backend...'}
+              {wsIsConnected ? 'Connected to Monday Backend' : apiError || 'Connecting to Monday Backend...'}
             </span>
-            <div className="w-3 h-3 rounded-full bg-blue-400 ml-4"></div>
-            <span className="text-sm text-blue-400">Voice Ready</span>
+            {!wsIsConnected && (
+              <button
+                onClick={() => {
+                  console.log("Manual reconnect triggered");
+                  setApiError("Reconnecting...");
+                  wsReconnect();
+                }}
+                className="ml-2 px-3 py-1 text-xs bg-[#20808D]/20 hover:bg-[#20808D]/30 border border-[#20808D]/40 rounded-lg transition-colors"
+              >
+                Reconnect
+              </button>
+            )}
+            <div className={`w-3 h-3 rounded-full transition-colors duration-300 ${isInitialized ? 'bg-blue-400' : 'bg-gray-400'} ml-4`}></div>
+            <span className="text-sm text-blue-400">
+              {isInitialized ? 'Voice Ready' : 'Initializing...'}
+            </span>
           </div>
         </div>
 
