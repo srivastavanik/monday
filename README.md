@@ -47,7 +47,7 @@ A voice-driven AI learning companion that operates in virtual reality, specifica
 - **Required API Keys:**
   - Perplexity API key (get from [Perplexity AI](https://www.perplexity.ai/))
   - ElevenLabs API key (get from [ElevenLabs](https://elevenlabs.io/))
-  - Youtube API key (get from [YouTube Data API] (https://developers.google.com/youtube/v3/getting-started/))
+  - Youtube API key (get from [YouTube Data API](https://developers.google.com/youtube/v3/getting-started/))
 
 ### Installation
 
